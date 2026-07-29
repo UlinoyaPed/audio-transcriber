@@ -4,6 +4,8 @@
 
 ### Added
 
+- Simplified Chinese translations for the README, live transcription guide,
+  and pipeline technical documentation, with bidirectional language links.
 - A standalone installable Python package with `audio-transcriber`,
   `audio-transcriber-live`,
   `audio-transcriber-verify-speakers`, and
@@ -23,6 +25,8 @@
 
 ### Changed
 
+- Expanded the package and repository introduction to cover live recording,
+  speaker diarization, and MiMo local/API backends.
 - Runtime modules now live in `audio_transcriber/`; setup scripts live in
   `scripts/`, tests in `tests/`, and current documentation in `docs/`.
 - MiMo recognition is now a switchable local/API stage; FSMN VAD, CAM++,

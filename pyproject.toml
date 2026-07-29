@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "audio-transcriber"
 version = "2.0.0"
-description = "Multi-engine audio transcription with speaker diarization"
+description = "Multi-engine audio transcription with live recording, speaker diarization, and MiMo local/API backends"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

@@ -1,5 +1,7 @@
 # Audio Transcription Pipeline — Technical Details
 
+[English](pipeline-details.md) | [简体中文](pipeline-details.zh-CN.md)
+
 For microphone capture and incremental MiMo API recognition, see
 [live-transcription.md](live-transcription.md). Live sessions preserve the
 same final CAM++/JSON/Markdown structure but defer global speaker clustering
@@ -482,8 +484,8 @@ audio-transcriber episode.flac --lang whisper --num-speakers 2 \
 ## `--lang mimo` — Xiaomi MiMo-V2.5-ASR (local or HTTP API)
 
 MiMo is an 8B-parameter LLM-based ASR model from Xiaomi. It outputs plain text
-with no per-sentence timestamps and no speaker labels. The `audio-transcribe`
-skill wraps either local inference or Xiaomi's HTTP API in the same VAD +
+with no per-sentence timestamps and no speaker labels. The `audio-transcriber`
+CLI wraps either local inference or Xiaomi's HTTP API in the same VAD +
 speaker-clustering sandwich so output format matches the FunASR presets:
 
 ```
@@ -492,8 +494,9 @@ Phase 1b  MiMo recognition   → local asr_sft() OR /chat/completions
 Phase 1c  CAM++ + KMeans     → speaker ID per VAD segment
 ```
 
-Files: `scripts/mimo_asr.py` (orchestrator), `scripts/mimo_api.py` (HTTP
-client), `scripts/setup_mimo.sh` (local-only installer).
+Files: `audio_transcriber/mimo_asr.py` (orchestrator),
+`audio_transcriber/mimo_api.py` (HTTP client), and `scripts/setup_mimo.sh`
+(local-only installer).
 
 `--mimo-backend local` is the compatibility default. It requires the
 approximately 34 GB local installation and a CUDA GPU with at least 20 GB

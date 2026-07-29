@@ -1,7 +1,10 @@
 # Audio Transcriber
 
-Standalone Python CLI for transcribing meetings and podcasts with speaker
-diarization, resumable processing, and optional LLM cleanup.
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+Standalone multi-engine Python CLI for meetings and podcasts, with live
+recording, speaker diarization, resumable MiMo local/API backends, and
+optional LLM cleanup.
 
 Two ASR engine families are available:
 

@@ -1,5 +1,7 @@
 # Live recording and transcription
 
+[English](live-transcription.md) | [简体中文](live-transcription.zh-CN.md)
+
 `audio-transcriber-live` records a microphone to a durable 16 kHz mono WAV and
 incrementally recognizes speech through the Xiaomi MiMo HTTP API. It is
 designed for meetings where preserving the recording and stable output order
