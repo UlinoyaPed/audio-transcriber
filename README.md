@@ -19,6 +19,7 @@ the same `speaker` / `start_ms` / `end_ms` / `text` segment format.
 - CAM++ speaker embeddings and clustering with real-name mapping.
 - Hotword biasing on the Chinese SeACo-Paraformer preset.
 - Checkpoints for interrupted MiMo recognition and LLM cleanup.
+- Microphone recording with incremental, serial MiMo API transcription.
 - Optional cleanup through Amazon Bedrock, Anthropic, or an
   OpenAI-compatible API.
 - Markdown and raw JSON output.
@@ -54,6 +55,9 @@ python -m pytest -q
 ```
 
 `ffmpeg` and `ffprobe` must be available on `PATH` for input conversion.
+Live recording also requires PortAudio (`libportaudio2` on Debian/Ubuntu or
+`portaudio` with Homebrew); the setup script installs the Python
+`sounddevice` binding.
 
 ## Quick start
 
@@ -82,6 +86,44 @@ audio-transcriber meeting.wav \
 
 The default outputs are `<stem>_raw_transcript.json` and
 `<stem>-transcript.md`. Pass `--json-out` or `--output` to override them.
+
+## Live recording and transcription
+
+List microphones, then start a session:
+
+```bash
+audio-transcriber-live --list-devices
+
+export MIMO_API_KEY='...'
+audio-transcriber-live \
+  --name weekly-meeting \
+  --input-device 0 \
+  --chunk-seconds 15 \
+  --mimo-audio-tag '<auto>' \
+  --device cpu \
+  --num-speakers 4 \
+  --speakers '张三,李四,王五,赵六'
+```
+
+Press `Ctrl+C` to stop, or pass `--duration 1800`. Text appears after each
+stable VAD segment is recognized. The recorder writes the microphone stream
+to `weekly-meeting.wav` before the serial worker makes API calls, so network
+latency cannot block the audio callback. Speech touching a timer boundary is
+carried into the next window instead of being cut immediately.
+
+Live preview deliberately omits speaker names. When recording stops, CAM++
+runs once over the complete WAV and writes stable speaker IDs to
+`weekly-meeting_raw_transcript.json` and `weekly-meeting-transcript.md`.
+Progress is stored in `weekly-meeting_live_partial.json`; the API key is
+redacted from checkpoints and output. Intermediate chunk WAVs are removed
+after success unless `--keep-chunks` is set.
+
+This is chunked near-real-time transcription, not a bidirectional streaming
+protocol. Its normal latency is the chunk interval plus VAD and API time. The
+initial release supports the MiMo HTTP API only; local MiMo and FunASR remain
+available through the offline `audio-transcriber` command. See
+[docs/live-transcription.md](docs/live-transcription.md) for the reliability
+model, recovery procedure, and limitations.
 
 ## MiMo local and API backends
 
@@ -212,6 +254,7 @@ long-recording behavior, CPU guidance, checkpoints, and output details.
 
 ```text
 audio_transcriber/
+  live.py                 microphone capture and serial live worker
   transcribe.py           main pipeline and CLI
   mimo_asr.py             MiMo orchestration, retry, and checkpoints
   mimo_api.py             Xiaomi MiMo HTTP client

@@ -7,12 +7,14 @@ on:
       - 'audio_transcriber/**'
       - 'tests/**'
       - 'pyproject.toml'
+      - 'scripts/**'
       - '.github/workflows/test.yml'
   pull_request:
     paths:
       - 'audio_transcriber/**'
       - 'tests/**'
       - 'pyproject.toml'
+      - 'scripts/**'
       - '.github/workflows/test.yml'
 
 permissions:

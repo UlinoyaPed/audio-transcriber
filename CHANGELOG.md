@@ -5,8 +5,12 @@
 ### Added
 
 - A standalone installable Python package with `audio-transcriber`,
+  `audio-transcriber-live`,
   `audio-transcriber-verify-speakers`, and
   `audio-transcriber-patch-clustering` console commands.
+- Near-real-time microphone recording through the MiMo HTTP API, with
+  disk-backed chunks, speech-boundary carry, serial requests, live
+  checkpoints, and final global CAM++ speaker clustering.
 - Xiaomi MiMo HTTP API backend selected with `--mimo-backend api`, using the
   `/chat/completions` `input_audio` protocol and `api-key` authentication.
 - CLI/environment configuration for API base URL, model, timeout, and API-key
@@ -29,6 +33,8 @@
   serial.
 - Markdown metadata now identifies the actual MiMo backend instead of always
   reporting FunASR.
+- Added the `sounddevice` binding to the setup environment for microphone
+  capture; PortAudio remains a required system library.
 
 ### Removed
 

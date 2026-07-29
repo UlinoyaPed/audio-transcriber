@@ -15,6 +15,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+live = [
+  "sounddevice>=0.5",
+  "soundfile>=0.12",
+]
 test = [
   "huggingface-hub>=0.27",
   "numpy>=1.26",
@@ -24,6 +28,7 @@ test = [
 
 [project.scripts]
 audio-transcriber = "audio_transcriber.transcribe:main"
+audio-transcriber-live = "audio_transcriber.live:main"
 audio-transcriber-verify-speakers = "audio_transcriber.verify_speakers:main"
 audio-transcriber-patch-clustering = "audio_transcriber.patch_clustering:main"
 

@@ -31,7 +31,7 @@ echo ""
 echo "This script will:"
 echo "  - Install ffmpeg (system package) if not present"
 echo "  - Require Python 3.12; rebuild $VENV_DIR if it was made with another version"
-echo "  - Install PyTorch, FunASR, modelscope, boto3 into the venv"
+echo "  - Install PyTorch, FunASR, modelscope, boto3, and sounddevice into the venv"
 echo "  - Patch FunASR's clustering for long-audio performance"
 if [ -n "$INSTALL_MIMO" ]; then
     echo "  - INSTALL_MIMO=1 set: also clone MiMo repo + flash-attn + download weights"
@@ -131,8 +131,9 @@ fi
 
 # Install FunASR + shared deps. These are sufficient for MiMo API mode on CPU:
 # FSMN VAD + CAM++ run locally while httpx sends each WAV segment to MiMo.
+# sounddevice is the live recorder binding; the host still needs PortAudio.
 echo "Installing FunASR and dependencies..."
-pip install -q -U funasr modelscope boto3 scikit-learn soundfile httpx
+pip install -q -U funasr modelscope boto3 scikit-learn soundfile sounddevice httpx
 pip install -q -e "$PROJECT_ROOT" --no-deps
 
 # Patch clustering for long audio

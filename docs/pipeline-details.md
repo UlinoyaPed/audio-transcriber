@@ -1,4 +1,9 @@
-# FunASR Meeting Transcription Pipeline — Technical Details
+# Audio Transcription Pipeline — Technical Details
+
+For microphone capture and incremental MiMo API recognition, see
+[live-transcription.md](live-transcription.md). Live sessions preserve the
+same final CAM++/JSON/Markdown structure but defer global speaker clustering
+until recording stops.
 
 ## Architecture
 
