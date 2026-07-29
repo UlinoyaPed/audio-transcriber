@@ -129,6 +129,8 @@ class TestPartialState:
         assert state["vad_segments"] == [[0, 1000], [2000, 3000]]
         assert state["completed"][0]["text"] == "hi"
         assert state["failed_at"]["idx"] == 1
+        assert state["backend"] == "local"
+        assert state["model"] == mimo_asr.LOCAL_MODEL_ID
 
     def test_load_partial_hash_mismatch_raises(self, tmp_path):
         partial = tmp_path / "pod_mimo_partial.json"
@@ -143,6 +145,89 @@ class TestPartialState:
                               [[0, 100]], [], {"idx": 0, "error": "x"})
         with pytest.raises(RuntimeError, match=r"audio_tag"):
             mimo_asr.load_partial(partial, "sha256:X", "<english>")
+
+    def test_api_checkpoint_never_stores_key(self, tmp_path):
+        partial = tmp_path / "pod_mimo_partial.json"
+        key = "mimo-super-secret"
+        mimo_asr.save_partial(
+            partial,
+            "sha256:X",
+            "<auto>",
+            "/unused",
+            [[1000, 5000]],
+            [],
+            {"idx": 0, "start_ms": 1000, "error": "HTTP 429"},
+            backend="api",
+            model="mimo-v2.5-asr",
+            base_url="https://api.xiaomimimo.com/v1",
+        )
+        assert key not in partial.read_text(encoding="utf-8")
+        assert "api_key" not in json.loads(partial.read_text(encoding="utf-8"))
+
+    @pytest.mark.parametrize(
+        ("field", "load_kwargs", "message"),
+        [
+            ("backend", {"backend": "local"}, "backend changed"),
+            (
+                "model",
+                {
+                    "backend": "api",
+                    "model": "different-model",
+                    "base_url": "https://api.example/v1",
+                },
+                "model changed",
+            ),
+            (
+                "base_url",
+                {
+                    "backend": "api",
+                    "model": "mimo-v2.5-asr",
+                    "base_url": "https://other.example/v1",
+                },
+                "base URL changed",
+            ),
+        ],
+    )
+    def test_api_resume_rejects_backend_model_or_url_mismatch(
+        self, tmp_path, field, load_kwargs, message
+    ):
+        partial = tmp_path / "pod_mimo_partial.json"
+        mimo_asr.save_partial(
+            partial,
+            "sha256:X",
+            "<auto>",
+            "/unused",
+            [[0, 1000]],
+            [],
+            {"idx": 0, "start_ms": 0, "error": "x"},
+            backend="api",
+            model="mimo-v2.5-asr",
+            base_url="https://api.example/v1",
+        )
+        with pytest.raises(RuntimeError, match=message):
+            mimo_asr.load_partial(
+                partial, "sha256:X", "<auto>", **load_kwargs
+            )
+
+    def test_old_local_partial_without_backend_is_supported(self, tmp_path):
+        partial = tmp_path / "old_mimo_partial.json"
+        partial.write_text(
+            json.dumps(
+                {
+                    "audio_hash": "sha256:X",
+                    "audio_tag": "<chinese>",
+                    "mimo_weights_path": "/mnt/hf",
+                    "vad_segments": [[0, 1000]],
+                    "completed": [],
+                    "failed_at": {"idx": 0, "start_ms": 0, "error": "OOM"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = mimo_asr.load_partial(
+            partial, "sha256:X", "<chinese>", backend="local"
+        )
+        assert state.get("backend") is None
 
 
 class TestInferWithRetry:
@@ -440,6 +525,178 @@ class TestTranscribeWithMimo:
                     weights_path=str(tmp_path), resume=True,
                 )
 
+    def test_api_backend_skips_local_checks_and_still_runs_cam(self, tmp_path):
+        audio = tmp_path / "pod.flac"
+        audio.write_bytes(b"fake")
+        vad = [(1000, 5000)]
+        recognizer = MagicMock()
+        recognizer.transcribe.return_value = "测试文本"
+
+        with patch.object(
+            mimo_asr, "require_cuda_and_vram",
+            side_effect=AssertionError("CUDA check must not run"),
+        ), patch.object(
+            mimo_asr, "require_mimo_installed",
+            side_effect=AssertionError("weight check must not run"),
+        ), patch.object(
+            mimo_asr, "_load_mimo",
+            side_effect=AssertionError("local model must not load"),
+        ), patch.object(
+            mimo_asr, "run_fsmn_vad", return_value=vad,
+        ), patch.object(
+            mimo_asr, "extract_segment",
+            return_value=str(tmp_path / "seg.wav"),
+        ), patch.object(
+            mimo_asr,
+            "assign_speakers_via_cam",
+            side_effect=lambda segs, *a, **k: [
+                {**segs[0], "speaker": 0}
+            ],
+        ) as cam:
+            out = mimo_asr.transcribe_with_mimo(
+                str(audio),
+                num_speakers=1,
+                audio_tag="<auto>",
+                backend="api",
+                api_recognizer=recognizer,
+                device="cpu",
+                backoffs=[0],
+            )
+
+        assert out == [{
+            "idx": 0,
+            "text": "测试文本",
+            "start_ms": 1000,
+            "end_ms": 5000,
+            "speaker": 0,
+        }]
+        recognizer.transcribe.assert_called_once_with(
+            str(tmp_path / "seg.wav"), "<auto>"
+        )
+        cam.assert_called_once()
+
+    def test_api_401_is_not_retried(self, tmp_path):
+        audio = tmp_path / "pod.flac"
+        audio.write_bytes(b"fake")
+        recognizer = MagicMock()
+        from mimo_api import MimoApiError
+        recognizer.transcribe.side_effect = MimoApiError(
+            "MiMo API returned HTTP 401"
+        )
+
+        with patch.object(mimo_asr, "run_fsmn_vad", return_value=[(0, 1000)]), \
+             patch.object(mimo_asr, "extract_segment",
+                          return_value=str(tmp_path / "seg.wav")):
+            with pytest.raises(RuntimeError, match=r"segment 0"):
+                mimo_asr.transcribe_with_mimo(
+                    str(audio),
+                    backend="api",
+                    api_recognizer=recognizer,
+                    backoffs=[0, 0, 0],
+                    device="cpu",
+                )
+        assert recognizer.transcribe.call_count == 1
+
+    def test_api_key_is_redacted_if_response_echoes_it(self, tmp_path):
+        audio = tmp_path / "pod.flac"
+        audio.write_bytes(b"fake")
+        key = "echoed-api-key"
+        recognizer = MagicMock()
+        recognizer.transcribe.return_value = f"before {key} after"
+
+        with patch.object(mimo_asr, "run_fsmn_vad", return_value=[(0, 1000)]), \
+             patch.object(mimo_asr, "extract_segment",
+                          return_value=str(tmp_path / "seg.wav")), \
+             patch.object(mimo_asr, "assign_speakers_via_cam",
+                          side_effect=lambda segs, *a, **k: [
+                              {**segs[0], "speaker": 0}
+                          ]):
+            out = mimo_asr.transcribe_with_mimo(
+                str(audio),
+                backend="api",
+                api_key=key,
+                api_recognizer=recognizer,
+                backoffs=[0],
+                device="cpu",
+            )
+        assert key not in out[0]["text"]
+        assert out[0]["text"] == "before [REDACTED] after"
+
+    @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+    def test_api_transient_http_error_retries_then_succeeds(
+        self, tmp_path, status
+    ):
+        audio = tmp_path / f"pod-{status}.flac"
+        audio.write_bytes(b"fake")
+        recognizer = MagicMock()
+        from mimo_api import MimoApiRetryableError
+        recognizer.transcribe.side_effect = [
+            MimoApiRetryableError(f"MiMo API returned HTTP {status}"),
+            "恢复成功",
+        ]
+
+        with patch.object(mimo_asr, "run_fsmn_vad", return_value=[(0, 1000)]), \
+             patch.object(mimo_asr, "extract_segment",
+                          return_value=str(tmp_path / "seg.wav")), \
+             patch.object(mimo_asr, "assign_speakers_via_cam",
+                          side_effect=lambda segs, *a, **k: [
+                              {**segs[0], "speaker": 0}
+                          ]):
+            out = mimo_asr.transcribe_with_mimo(
+                str(audio),
+                backend="api",
+                api_recognizer=recognizer,
+                backoffs=[0],
+                device="cpu",
+            )
+        assert out[0]["text"] == "恢复成功"
+        assert recognizer.transcribe.call_count == 2
+
+    def test_api_timeout_exhaustion_is_clear_and_key_is_not_checkpointed(
+        self, tmp_path, capsys
+    ):
+        audio = tmp_path / "pod.flac"
+        audio.write_bytes(b"fake")
+        key = "must-never-appear"
+        recognizer = MagicMock()
+        from mimo_api import MimoApiRetryableError
+        recognizer.transcribe.side_effect = MimoApiRetryableError(
+            f"timeout detail {key}"
+        )
+
+        with patch.object(
+            mimo_asr, "run_fsmn_vad", return_value=[(1000, 5000)]
+        ), patch.object(
+            mimo_asr, "extract_segment",
+            return_value=str(tmp_path / "seg.wav"),
+        ):
+            with pytest.raises(RuntimeError, match=r"segment 0.*00:00:01") as exc:
+                mimo_asr.transcribe_with_mimo(
+                    str(audio),
+                    backend="api",
+                    api_key=key,
+                    api_recognizer=recognizer,
+                    api_model="mimo-v2.5-asr",
+                    api_base_url="https://api.example/v1",
+                    backoffs=[0, 0],
+                    device="cpu",
+                )
+
+        partial = audio.parent / f"{audio.stem}_mimo_partial.json"
+        serialized = partial.read_text(encoding="utf-8")
+        captured = capsys.readouterr()
+        assert recognizer.transcribe.call_count == 3
+        assert key not in str(exc.value)
+        assert key not in serialized
+        assert key not in captured.out
+        assert key not in captured.err
+        state = json.loads(serialized)
+        assert state["backend"] == "api"
+        assert state["model"] == "mimo-v2.5-asr"
+        assert state["base_url"] == "https://api.example/v1"
+        assert state["failed_at"]["start_ms"] == 1000
+        assert state["failed_at"]["end_ms"] == 5000
+
 
 class TestExtractSegmentValidation:
     """Nonexistent audio should fail with a clear message, not ffmpeg output."""
@@ -552,3 +809,70 @@ class TestCliWiring:
         assert tf.resolve_mimo_weights_path(None) == str(
             Path.home() / ".cache" / "huggingface"
         )
+
+    def test_api_config_cli_overrides_environment(self):
+        import transcribe as tf
+        config = tf.resolve_mimo_api_config(
+            "https://cli.example/v1/",
+            "cli-model",
+            45,
+            "CUSTOM_KEY",
+            environ={
+                "CUSTOM_KEY": "secret",
+                "MIMO_BASE_URL": "https://env.example/v1",
+                "MIMO_API_MODEL": "env-model",
+            },
+        )
+        assert config == {
+            "base_url": "https://cli.example/v1",
+            "model": "cli-model",
+            "timeout": 45,
+            "api_key": "secret",
+        }
+
+    def test_api_config_environment_then_defaults(self):
+        import transcribe as tf
+        env_config = tf.resolve_mimo_api_config(
+            None,
+            None,
+            120,
+            "MIMO_API_KEY",
+            environ={
+                "MIMO_API_KEY": "secret",
+                "MIMO_BASE_URL": "https://env.example/v1/",
+                "MIMO_API_MODEL": "env-model",
+            },
+        )
+        assert env_config["base_url"] == "https://env.example/v1"
+        assert env_config["model"] == "env-model"
+        default_config = tf.resolve_mimo_api_config(
+            None, None, 120, "MIMO_API_KEY", environ={}
+        )
+        assert default_config["base_url"] == "https://api.xiaomimimo.com/v1"
+        assert default_config["model"] == "mimo-v2.5-asr"
+
+    def test_markdown_asr_engine_labels(self):
+        import transcribe as tf
+        mimo = tf.MODEL_PRESETS["mimo"]
+        assert tf.asr_engine_label(
+            "mimo", mimo, mimo_backend="api", mimo_api_model="mimo-v2.5-asr"
+        ) == "MiMo API (mimo-v2.5-asr)"
+        assert tf.asr_engine_label(
+            "mimo", mimo, mimo_backend="local"
+        ) == "MiMo-V2.5-ASR (local)"
+        zh = tf.MODEL_PRESETS["zh"]
+        assert tf.asr_engine_label("zh", zh).startswith("FunASR (")
+
+        markdown = tf.assemble_markdown(
+            ["[00:00:01] **Speaker 1**: 测试"],
+            {
+                "filename": "meeting.wav",
+                "asr_engine": tf.asr_engine_label(
+                    "mimo",
+                    mimo,
+                    mimo_backend="api",
+                    mimo_api_model="mimo-v2.5-asr",
+                ),
+            },
+        )
+        assert "| **ASR Engine** | MiMo API (mimo-v2.5-asr) |" in markdown

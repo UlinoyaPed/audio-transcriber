@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Xiaomi MiMo HTTP API backend selected with `--mimo-backend api`, using the
+  `/chat/completions` `input_audio` protocol and `api-key` authentication.
+- CLI/environment configuration for API base URL, model, timeout, and API-key
+  environment variable.
+- Backend-aware MiMo checkpoints that validate audio, language tag, backend,
+  model, and API base URL while remaining compatible with legacy local
+  checkpoints.
+- Mocked API and orchestration tests covering request construction, retries,
+  CPU/API operation, CAM++ handoff, metadata, and secret redaction.
+
+### Changed
+
+- MiMo recognition is now a switchable local/API stage; FSMN VAD, CAM++,
+  post-processing, resume behavior, and Markdown output remain shared.
+- Added `httpx` to the base environment so API mode works without
+  `INSTALL_MIMO=1`, local weights, FlashAttention, or an NVIDIA GPU.
+- `--mimo-batch` is deprecated and ignored; segment recognition remains
+  serial.
+- Markdown metadata now identifies the actual MiMo backend instead of always
+  reporting FunASR.
+
 ## 1.7.1 (2026-05-01)
 
 ### Rebranding — plugin and skill renamed to reflect multi-engine support

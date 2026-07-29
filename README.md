@@ -49,7 +49,9 @@ Add as a marketplace, then install:
 bash plugins/audio-transcriber/skills/audio-transcribe/scripts/setup_env.sh
 source .venv/bin/activate
 
-# 2. (Optional) install MiMo-V2.5-ASR locally — ~34 GB download, ≥20 GB VRAM
+# 2. (Optional) install MiMo-V2.5-ASR locally — ~34 GB download, ≥20 GB VRAM.
+# Skip INSTALL_MIMO for API mode; the base environment already includes httpx,
+# FunASR, ModelScope, PyTorch, soundfile, and scikit-learn.
 INSTALL_MIMO=1 MIMO_WEIGHTS_PATH=/path/to/hf-cache \
   bash plugins/audio-transcriber/skills/audio-transcribe/scripts/setup_env.sh
 
@@ -69,7 +71,13 @@ python3 plugins/audio-transcriber/skills/audio-transcribe/scripts/transcribe.py 
   episode.flac --lang mimo --num-speakers 2 --speakers "Host,Guest" \
   --mimo-weights-path /path/to/hf-cache
 
-# 7. Auto-detect language (zh/en/ja/ko/yue)
+# 7. The same MiMo pipeline through Xiaomi's HTTP API (CPU is supported)
+export MIMO_API_KEY='...'
+python3 plugins/audio-transcriber/skills/audio-transcribe/scripts/transcribe.py \
+  episode.flac --lang mimo --mimo-backend api --mimo-audio-tag '<auto>' \
+  --device cpu --num-speakers 2 --speakers "Host,Guest"
+
+# 8. Auto-detect language (zh/en/ja/ko/yue)
 python3 plugins/audio-transcriber/skills/audio-transcribe/scripts/transcribe.py \
   meeting.flac --lang auto --num-speakers 6
 ```
@@ -92,7 +100,8 @@ python3 plugins/audio-transcriber/skills/audio-transcribe/scripts/transcribe.py 
 │               │   └── pipeline-details.md
 │               └── scripts/
 │                   ├── transcribe.py             # Main pipeline
-│                   ├── mimo_asr.py               # MiMo-V2.5-ASR integration
+│                   ├── mimo_asr.py               # MiMo orchestration + checkpoints
+│                   ├── mimo_api.py               # Xiaomi MiMo HTTP API client
 │                   ├── patch_clustering.py       # Long-audio perf fix
 │                   ├── setup_env.sh              # One-click env setup
 │                   └── setup_mimo.sh             # Opt-in MiMo installer
@@ -111,7 +120,8 @@ Phase 1: ASR                     │
   ├─ ASR engine:                 │
   │    FunASR (Paraformer/       ├─► raw_transcript.json
   │    SenseVoice/Whisper)       │
-  │    OR MiMo-V2.5-ASR (local)  │
+  │    OR MiMo-V2.5-ASR          │
+  │      (local / Xiaomi API)    │
   ├─ Hotword biasing (SeACo-zh)  │
   ├─ Punctuation restoration     │
   └─ CAM++ (speaker clustering)  │
@@ -147,6 +157,62 @@ The patch replaces O(N^3) `scipy.linalg.eigh` with O(N^2·k) `scipy.sparse.linal
 | MiMo-V2.5-ASR | ~49 min | 0.12 | ~$0.94 | **Visibly better** |
 
 See `docs/superpowers/reports/2026-04-30-mimo-vs-funasr-perf-cost.md` for the full comparison.
+
+## MiMo local and API backends
+
+`--lang mimo` always runs FSMN VAD locally, recognizes each VAD segment in
+order, then runs CAM++ speaker embeddings and clustering locally. Select only
+the recognition backend with `--mimo-backend local|api`; the default is
+`local`, preserving existing commands and behavior.
+
+**MiMo local** downloads approximately 34 GB of repository dependencies,
+weights, and audio-tokenizer data and requires a CUDA GPU with substantial
+VRAM (at least 20 GB; more headroom is recommended). Install it explicitly
+with `INSTALL_MIMO=1`.
+
+**MiMo API** does not clone the MiMo repository, compile FlashAttention, load
+the 8B model, or download MiMo weights. The base setup remains required because
+FSMN VAD and CAM++ use FunASR, ModelScope, PyTorch, soundfile, and
+scikit-learn. It can run those local stages on CPU:
+
+```bash
+export MIMO_API_KEY='...'
+
+python3 plugins/audio-transcriber/skills/audio-transcribe/scripts/transcribe.py \
+  meeting.m4a \
+  --lang mimo \
+  --mimo-backend api \
+  --mimo-audio-tag '<auto>' \
+  --device cpu \
+  --num-speakers 4 \
+  --speakers '张三,李四,王五,赵六'
+```
+
+API configuration uses CLI values before environment variables:
+
+| CLI | Environment | Default |
+|---|---|---|
+| `--mimo-api-base-url` | `MIMO_BASE_URL` | `https://api.xiaomimimo.com/v1` |
+| `--mimo-api-model` | `MIMO_API_MODEL` | `mimo-v2.5-asr` |
+| `--mimo-api-key-env NAME` | Reads `NAME` (`MIMO_API_KEY` by default) | — |
+| `--mimo-api-timeout` | — | `120` seconds |
+
+Transient HTTP 408/429/5xx responses, connection failures, and timeouts use
+finite exponential backoff. Requests remain serial to preserve segment order
+and stable rate-limit behavior. If retries are exhausted, resume the matching
+backend/model/base URL from its checkpoint:
+
+```bash
+python3 plugins/audio-transcriber/skills/audio-transcribe/scripts/transcribe.py \
+  meeting.m4a --lang mimo --mimo-backend api --mimo-audio-tag '<auto>' \
+  --device cpu --resume-mimo
+```
+
+The API key is read only from the selected environment variable. It is never
+written to logs, partial checkpoints, raw transcripts, or Markdown output.
+Audio segments are sent to the configured MiMo API; VAD and speaker embeddings
+remain local. `--mimo-batch` is retained only for CLI compatibility, is
+deprecated, and does not enable concurrent requests.
 
 ## License
 

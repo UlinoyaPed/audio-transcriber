@@ -46,7 +46,7 @@ Transcribe multi-speaker audio into structured Markdown with automatic
 speaker diarization, hotword biasing, and optional LLM cleanup. Two
 ASR engine families are available: **FunASR** (Paraformer / SenseVoice /
 Whisper — fast, cheap, GPU or CPU, 99 languages) and **MiMo-V2.5-ASR**
-(Xiaomi's 8B model, local GPU only, stronger on proper nouns and
+(local 8B model or Xiaomi HTTP API, stronger on proper nouns and
 code-switching). Both share the same VAD + speaker-clustering stack.
 
 All scripts run directly from the plugin directory — no copying needed.
@@ -65,7 +65,7 @@ SCRIPTS=${CLAUDE_PLUGIN_ROOT}/skills/audio-transcribe/scripts
 | `en` | Paraformer-en | English | No |
 | `auto` | SenseVoiceSmall | Auto-detect: zh/en/ja/ko/yue | No |
 | `whisper` | Whisper-large-v3-turbo | 99 languages | No |
-| `mimo` | MiMo-V2.5-ASR (local 8B, GPU-only) | zh/en/code-switch/dialects | No |
+| `mimo` | MiMo-V2.5-ASR (local 8B or HTTP API) | zh/en/code-switch/dialects | No |
 
 All presets include **speaker diarization** (CAM++) and **VAD** (FSMN).
 `mimo` reuses the FSMN VAD + CAM++ stack around MiMo's text output.
@@ -242,19 +242,22 @@ validates that no audio is lost (detects silent truncation).
 
 **Do NOT split long recordings** — splitting breaks speaker ID consistency.
 
-## MiMo-V2.5-ASR (optional, GPU-only)
+## MiMo-V2.5-ASR (local or Xiaomi HTTP API)
 
-`--lang mimo` runs Xiaomi's
-[MiMo-V2.5-ASR](https://huggingface.co/XiaomiMiMo/MiMo-V2.5-ASR) locally on a
-CUDA GPU. Use it when:
+`--lang mimo` keeps FSMN VAD and CAM++ speaker clustering local, while
+`--mimo-backend local|api` selects how each VAD segment is recognized.
+`local` remains the default for backward compatibility. Use MiMo when:
 - You want to evaluate MiMo against Paraformer on Chinese audio.
 - The recording has heavy code-switching, dialects (Wu, Cantonese, Hokkien,
   Sichuanese), lyrics, or rare proper nouns that other presets mis-transcribe.
 
+### Local backend
+
 **Requirements:**
 - CUDA ≥12.0 and **≥20 GB VRAM** (16 GB cards OOM during inference).
 - Python 3.12 (enforced by `setup_env.sh`).
-- ~20 GB weight download (one-time) and `flash-attn==2.7.4.post1` compile
+- Approximately **34 GB** of repository dependencies, model weights, and
+  audio-tokenizer data, plus a `flash-attn==2.7.4.post1` compile
   (needs `nvcc` from the CUDA toolkit, takes 10–30 min).
 
 **Install (opt-in):**
@@ -270,28 +273,70 @@ AUTO_YES=1 INSTALL_MIMO=1 \
 
 ```bash
 python3 $SCRIPTS/transcribe.py podcast.m4a \
-    --lang mimo --num-speakers 2 \
+    --lang mimo --mimo-backend local --num-speakers 2 \
     --mimo-weights-path /mnt/models/hf
 ```
 
-**Resume after failure:**
+**Resume local after failure:**
 
 ```bash
 python3 $SCRIPTS/transcribe.py podcast.m4a \
-    --lang mimo --resume-mimo --mimo-weights-path /mnt/models/hf
+    --lang mimo --mimo-backend local --resume-mimo \
+    --mimo-weights-path /mnt/models/hf
 ```
 
-**Limitations:**
+### API backend
+
+API mode needs no MiMo repository, model weights, FlashAttention build, or
+large GPU. Run the normal `setup_env.sh` without `INSTALL_MIMO=1`; it installs
+the HTTP client plus FunASR, ModelScope, PyTorch, soundfile, and scikit-learn
+for local VAD and CAM++ processing. CPU mode is supported.
+
+```bash
+export MIMO_API_KEY='...'
+
+python3 $SCRIPTS/transcribe.py meeting.m4a \
+    --lang mimo \
+    --mimo-backend api \
+    --mimo-audio-tag '<auto>' \
+    --device cpu \
+    --num-speakers 4 \
+    --speakers '张三,李四,王五,赵六'
+```
+
+CLI values take precedence over `MIMO_BASE_URL` and `MIMO_API_MODEL`.
+`--mimo-api-key-env` selects the environment variable containing the key
+(`MIMO_API_KEY` by default), and `--mimo-api-timeout` defaults to 120 seconds.
+Do not place a key in commands, configuration files, or URLs.
+
+API calls are serial. HTTP 408/429/500/502/503/504, connection errors, and
+timeouts use finite exponential backoff. Authentication and request-format
+errors fail immediately. Resume only with the same audio, audio tag, backend,
+model, and base URL:
+
+```bash
+python3 $SCRIPTS/transcribe.py meeting.m4a \
+    --lang mimo --mimo-backend api --mimo-audio-tag '<auto>' \
+    --device cpu --resume-mimo
+```
+
+The API key is never persisted in logs, `*_mimo_partial.json`, raw JSON, or
+Markdown output. API mode sends each speech segment to the configured MiMo
+endpoint; VAD and speaker embeddings remain local.
+
+**Shared limitations:**
 - No hotword biasing (MiMo has no API for it — `--hotwords` is ignored).
-- No CPU fallback.
+- Local backend has no CPU fallback; API backend can run local VAD/CAM++ on CPU.
 - Inference is slower than Paraformer on the same GPU (8B model vs ~0.3B);
   expect RTF around 0.1–0.2 on an A100.
+- `--mimo-batch` is deprecated and ignored; no concurrent local or API
+  recognition is implemented.
 
 ## Key Flags
 
 | Flag | Purpose |
 |------|---------|
-| `--lang` | `zh` (default), `zh-basic`, `en`, `auto`, `whisper` |
+| `--lang` | `zh` (default), `zh-basic`, `en`, `auto`, `whisper`, `mimo` |
 | `--hotwords` | Hotword file or string — biases ASR (zh only) |
 | `--reference F` | Reference file for LLM ASR correction |
 | `--num-speakers N` | Expected speaker count (improves diarization) |
@@ -312,7 +357,12 @@ python3 $SCRIPTS/transcribe.py podcast.m4a \
 | `--output PATH` | Custom output file path |
 | `--model-cache-dir` | ModelScope model cache directory (~3GB, default: `~/.cache/modelscope/`) |
 | `--mimo-audio-tag` | MiMo language hint: `<chinese>` (default), `<english>`, `<auto>` |
-| `--mimo-batch N` | Concurrent VAD segments per MiMo call (default 1; H100/80GB can go higher) |
+| `--mimo-backend` | `local` (default) or Xiaomi MiMo `api` |
+| `--mimo-api-base-url` | API base URL; overrides `MIMO_BASE_URL` |
+| `--mimo-api-model` | API model; overrides `MIMO_API_MODEL` |
+| `--mimo-api-timeout` | Per-request timeout in seconds (default 120) |
+| `--mimo-api-key-env` | Environment variable holding the key (default `MIMO_API_KEY`) |
+| `--mimo-batch N` | Deprecated compatibility flag; ignored, processing stays serial |
 | `--mimo-weights-path DIR` | Cache dir for MiMo weights (default: `$HF_HOME` → `~/.cache/huggingface`) |
 | `--resume-mimo` | Resume MiMo Phase 1 from `*_mimo_partial.json` after a mid-run failure |
 

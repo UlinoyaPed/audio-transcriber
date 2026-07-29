@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""MiMo-V2.5-ASR local inference integration for audio-transcribe.
+"""MiMo-V2.5-ASR integration for local inference and Xiaomi's HTTP API.
 
-Runs XiaomiMiMo/MiMo-V2.5-ASR on a local CUDA GPU, reusing the existing
-pipeline's FSMN VAD segmentation and CAM++ speaker clustering so the output
-format matches --lang zh exactly.
+Both backends reuse the existing pipeline's FSMN VAD segmentation and CAM++
+speaker clustering so their output format matches --lang zh exactly.
 
 Public entry points:
   - require_cuda_and_vram(min_gb): pre-flight GPU capacity check
@@ -23,7 +22,14 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
+
+from mimo_api import MimoApiRecognizer, MimoApiRetryableError
+
+
+LOCAL_MODEL_ID = "XiaomiMiMo/MiMo-V2.5-ASR"
+DEFAULT_API_MODEL = "mimo-v2.5-asr"
+DEFAULT_API_BASE_URL = "https://api.xiaomimimo.com/v1"
 
 
 def require_cuda_and_vram(min_gb: int = 20) -> None:
@@ -114,6 +120,58 @@ def _cuda_cleanup() -> None:
         pass
 
 
+def _safe_error_text(exc: BaseException,
+                     secrets: Sequence[str] = ()) -> str:
+    """Return diagnostic text with configured secrets removed."""
+    text = f"{type(exc).__name__}: {exc}"
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def recognize_with_retry(
+    recognize_segment: Callable[[str], str],
+    audio_path: str,
+    *,
+    max_attempts: int,
+    backoffs: Sequence[float],
+    is_retryable: Callable[[BaseException], bool],
+    on_retry: Optional[Callable[[], None]] = None,
+    secrets: Sequence[str] = (),
+) -> str:
+    """Run a segment recognizer with finite, caller-controlled retry policy."""
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+
+    last_exc: Optional[BaseException] = None
+    attempts_made = 0
+    for attempt in range(max_attempts):
+        attempts_made = attempt + 1
+        if attempt > 0:
+            if on_retry is not None:
+                on_retry()
+            delay = backoffs[min(attempt - 1, len(backoffs) - 1)] if backoffs else 0
+            if delay > 0:
+                time.sleep(delay)
+        try:
+            text = recognize_segment(audio_path)
+            return text.strip()
+        except Exception as exc:
+            last_exc = exc
+            safe_error = _safe_error_text(exc, secrets)
+            print(f"    attempt {attempts_made}/{max_attempts} failed: {safe_error}")
+            if not is_retryable(exc):
+                raise RuntimeError(
+                    f"MiMo inference failed with a non-retryable error: {safe_error}"
+                ) from exc
+
+    safe_error = _safe_error_text(last_exc or RuntimeError("unknown error"), secrets)
+    raise RuntimeError(
+        f"MiMo inference failed after {attempts_made} retries/attempts: {safe_error}"
+    ) from last_exc
+
+
 def infer_with_retry(mimo, audio_path: str, audio_tag: str,
                      max_retries: int = 3,
                      backoffs: Sequence[float] = (0.5, 2.0, 5.0)) -> str:
@@ -124,21 +182,14 @@ def infer_with_retry(mimo, audio_path: str, audio_tag: str,
     clear "after N retries" message so callers can distinguish retry
     exhaustion from a single unrecoverable failure.
     """
-    last_exc: Optional[BaseException] = None
-    for attempt in range(max_retries):
-        if attempt > 0:
-            _cuda_cleanup()
-            time.sleep(backoffs[min(attempt - 1, len(backoffs) - 1)])
-        try:
-            return mimo.asr_sft(audio_path, audio_tag=audio_tag)
-        except Exception as e:
-            last_exc = e
-            err_class = type(e).__name__
-            print(f"    attempt {attempt + 1}/{max_retries} failed: {err_class}: {e}")
-    raise RuntimeError(
-        f"MiMo inference failed after {max_retries} retries: "
-        f"{type(last_exc).__name__}: {last_exc}"
-    ) from last_exc
+    return recognize_with_retry(
+        lambda path: mimo.asr_sft(path, audio_tag=audio_tag),
+        audio_path,
+        max_attempts=max_retries,
+        backoffs=backoffs,
+        is_retryable=lambda _exc: True,
+        on_retry=_cuda_cleanup,
+    )
 
 
 def _format_time(ms: int) -> str:
@@ -178,7 +229,13 @@ def transcribe_with_mimo(audio_path: str,
                          spk_model_id: str = "iic/speech_campplus_sv_zh-cn_16k-common",
                          vad_model_id: str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
                          repo_path: Optional[str] = None,
-                         backoffs: Sequence[float] = (0.5, 2.0, 5.0)) -> list:
+                         backoffs: Optional[Sequence[float]] = None,
+                         backend: str = "local",
+                         api_key: Optional[str] = None,
+                         api_base_url: str = DEFAULT_API_BASE_URL,
+                         api_model: str = DEFAULT_API_MODEL,
+                         api_timeout: float = 120,
+                         api_recognizer: Optional[MimoApiRecognizer] = None) -> list:
     """Phase 1 MiMo path: VAD -> per-segment MiMo ASR -> CAM++ speaker labels.
 
     Returns a sentence_info-shaped list of
@@ -186,13 +243,35 @@ def transcribe_with_mimo(audio_path: str,
     matching the format produced by the FunASR presets, so downstream
     Phase 2/3 code is identical regardless of --lang.
     """
+    if backend not in ("local", "api"):
+        raise ValueError(f"Unsupported MiMo backend: {backend!r}")
+    if batch != 1:
+        print("  Warning: --mimo-batch is deprecated and ignored; "
+              "MiMo segments are processed serially.")
+
     weights_path = weights_path or os.environ.get("HF_HOME") \
         or str(Path.home() / ".cache" / "huggingface")
     repo_path = repo_path or str(Path(sys.prefix) / "mimo")
+    api_base_url = api_base_url.rstrip("/")
+    checkpoint_model = LOCAL_MODEL_ID if backend == "local" else api_model
+    checkpoint_base_url = None if backend == "local" else api_base_url
 
-    # 1. Preflights — cheap, fail fast before any load
-    require_cuda_and_vram(min_gb=20)
-    require_mimo_installed(weights_path, repo_path)
+    # 1. Local-only preflights. API mode still runs VAD/CAM++ on `device`.
+    if backend == "local":
+        require_cuda_and_vram(min_gb=20)
+        require_mimo_installed(weights_path, repo_path)
+    elif api_recognizer is None:
+        if not api_key:
+            raise RuntimeError(
+                "MiMo API key is not set. Export MIMO_API_KEY or pass "
+                "--mimo-api-key-env with the name of an environment variable."
+            )
+        api_recognizer = MimoApiRecognizer(
+            api_key=api_key,
+            base_url=api_base_url,
+            model=api_model,
+            timeout=api_timeout,
+        )
 
     # 2. Resolve state (resume or fresh VAD)
     audio_p = Path(audio_path)
@@ -205,7 +284,14 @@ def transcribe_with_mimo(audio_path: str,
                 f"--resume-mimo requested but {partial_path.name} not found. "
                 f"Run without --resume-mimo to start fresh."
             )
-        state = load_partial(partial_path, audio_hash, audio_tag)
+        state = load_partial(
+            partial_path,
+            audio_hash,
+            audio_tag,
+            backend=backend,
+            model=checkpoint_model,
+            base_url=checkpoint_base_url,
+        )
         vad_segments = [tuple(s) for s in state["vad_segments"]]
         completed = {c["idx"]: c for c in state["completed"]}
         start_idx = state["failed_at"]["idx"]
@@ -218,16 +304,38 @@ def transcribe_with_mimo(audio_path: str,
         completed = {}
         start_idx = 0
 
-    # 3. Load MiMo. Initialize to None so the `finally` block is safe even if
-    # a future refactor moves _load_mimo inside the try. Today, _load_mimo is
-    # outside the try so an exception here exits the function before `finally`
-    # is reached, but the guard costs nothing and future-proofs the pattern.
-    print(f"[Phase 1b] MiMo ASR (local, GPU)")
-    print(f"  Loading MiMo from {weights_path}...")
-    t_load = time.time()
+    # 3. Build a unified single-segment recognizer.
     mimo = None
-    mimo = _load_mimo(weights_path)
-    print(f"  Loaded in {time.time() - t_load:.1f}s")
+    if backend == "local":
+        print(f"[Phase 1b] MiMo ASR (local, GPU)")
+        print(f"  Loading MiMo from {weights_path}...")
+        t_load = time.time()
+        mimo = _load_mimo(weights_path)
+        print(f"  Loaded in {time.time() - t_load:.1f}s")
+
+        def recognize_segment(path: str) -> str:
+            return mimo.asr_sft(path, audio_tag=audio_tag)
+
+        retry_backoffs = tuple(backoffs or (0.5, 2.0, 5.0))
+        max_attempts = 3
+        retryable = lambda _exc: True
+        on_retry: Optional[Callable[[], None]] = _cuda_cleanup
+        secrets: Sequence[str] = ()
+    else:
+        print(f"[Phase 1b] MiMo ASR (HTTP API: {api_model})")
+        assert api_recognizer is not None
+
+        def recognize_segment(path: str) -> str:
+            text = api_recognizer.transcribe(path, audio_tag)
+            if api_key and api_key in text:
+                return text.replace(api_key, "[REDACTED]")
+            return text
+
+        retry_backoffs = tuple(backoffs or (1.0, 2.0, 5.0, 10.0))
+        max_attempts = len(retry_backoffs) + 1
+        retryable = lambda exc: isinstance(exc, MimoApiRetryableError)
+        on_retry = None
+        secrets = (api_key or "",)
 
     # 4. Per-segment loop with retry
     t0 = time.time()
@@ -239,19 +347,35 @@ def transcribe_with_mimo(audio_path: str,
                 s_ms, e_ms = vad_segments[i]
                 chunk_wav = extract_segment(audio_path, s_ms, e_ms, tmpdir)
                 try:
-                    text = infer_with_retry(mimo, chunk_wav, audio_tag,
-                                            max_retries=3, backoffs=list(backoffs))
+                    text = recognize_with_retry(
+                        recognize_segment,
+                        chunk_wav,
+                        max_attempts=max_attempts,
+                        backoffs=retry_backoffs,
+                        is_retryable=retryable,
+                        on_retry=on_retry,
+                        secrets=secrets,
+                    )
                 except RuntimeError as e:
                     # Final failure: persist partial then re-raise
+                    safe_error = _safe_error_text(e, secrets)
                     save_partial(
                         partial_path, audio_hash, audio_tag, weights_path,
                         [list(v) for v in vad_segments],
                         [completed[k] for k in sorted(completed)],
-                        failed_at={"idx": i, "start_ms": s_ms, "error": str(e)},
+                        failed_at={
+                            "idx": i,
+                            "start_ms": s_ms,
+                            "end_ms": e_ms,
+                            "error": safe_error,
+                        },
+                        backend=backend,
+                        model=checkpoint_model,
+                        base_url=checkpoint_base_url,
                     )
                     raise RuntimeError(
                         f"MiMo inference failed at segment {i}/{len(vad_segments)} "
-                        f"({_format_time(s_ms)}): {e}. "
+                        f"({_format_time(s_ms)}-{_format_time(e_ms)}): {safe_error}. "
                         f"Partial saved: {partial_path.name}. "
                         f"Resume with: --resume-mimo"
                     ) from e
@@ -260,7 +384,7 @@ def transcribe_with_mimo(audio_path: str,
                 print(f"  [{i+1:3d}/{len(vad_segments)}] {_format_time(s_ms)} "
                       f"({e_ms - s_ms}ms) -> {text[:40]}")
     finally:
-        if mimo is not None:
+        if backend == "local" and mimo is not None:
             _free_mimo(mimo)
 
     wall = time.time() - t0
@@ -436,9 +560,14 @@ def compute_audio_hash(path: str, _chunk: int = 1 << 20) -> str:
 
 def save_partial(partial_path: Path, audio_hash: str, audio_tag: str,
                  weights_path: str, vad_segments: list, completed: list,
-                 failed_at: dict) -> None:
+                 failed_at: dict, *, backend: str = "local",
+                 model: str = LOCAL_MODEL_ID,
+                 base_url: Optional[str] = None) -> None:
     """Persist MiMo inference state so --resume-mimo can continue."""
     payload = {
+        "backend": backend,
+        "model": model,
+        "base_url": base_url.rstrip("/") if base_url else None,
         "audio_hash": audio_hash,
         "audio_tag": audio_tag,
         "mimo_weights_path": weights_path,
@@ -452,8 +581,14 @@ def save_partial(partial_path: Path, audio_hash: str, audio_tag: str,
     tmp.replace(partial_path)
 
 
-def load_partial(partial_path: Path, audio_hash: str, audio_tag: str) -> dict:
-    """Load resume state, verifying audio_hash and audio_tag match the current run."""
+def load_partial(partial_path: Path, audio_hash: str, audio_tag: str, *,
+                 backend: str = "local", model: str = LOCAL_MODEL_ID,
+                 base_url: Optional[str] = None) -> dict:
+    """Load resume state and reject incompatible backend/model parameters.
+
+    Partial files created before backend support had no ``backend`` field.
+    They are treated as local checkpoints for backward compatibility.
+    """
     state = json.loads(Path(partial_path).read_text(encoding="utf-8"))
     if state.get("audio_hash") != audio_hash:
         raise RuntimeError(
@@ -467,5 +602,35 @@ def load_partial(partial_path: Path, audio_hash: str, audio_tag: str) -> dict:
             f"({state.get('audio_tag')} != {audio_tag}). "
             f"Use the same --mimo-audio-tag as the original run, or "
             f"delete {partial_path} to restart."
+        )
+    state_backend = state.get("backend", "local")
+    if state_backend != backend:
+        raise RuntimeError(
+            f"MiMo backend changed since partial was saved "
+            f"({state_backend!r} != {backend!r}). Delete {partial_path} "
+            f"to restart instead of mixing backend results."
+        )
+
+    # Old local checkpoints did not include model/base_url and remain valid.
+    saved_model = state.get("model")
+    if saved_model is None and state_backend != "local":
+        raise RuntimeError(
+            f"MiMo API model is missing from {partial_path}; delete it to restart."
+        )
+    if saved_model is not None and saved_model != model:
+        raise RuntimeError(
+            f"MiMo model changed since partial was saved "
+            f"({saved_model!r} != {model!r}). Delete {partial_path} to restart."
+        )
+
+    expected_base_url = base_url.rstrip("/") if base_url else None
+    saved_base_url = state.get("base_url")
+    if saved_base_url:
+        saved_base_url = saved_base_url.rstrip("/")
+    if state_backend == "api" and saved_base_url != expected_base_url:
+        raise RuntimeError(
+            f"MiMo API base URL changed since partial was saved "
+            f"({saved_base_url!r} != {expected_base_url!r}). "
+            f"Delete {partial_path} to restart."
         )
     return state

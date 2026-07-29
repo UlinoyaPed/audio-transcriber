@@ -120,7 +120,7 @@ MODEL_PRESETS = {
         "hotword_support": False,
     },
     "mimo": {
-        "label": "MiMo-V2.5-ASR (local 8B, GPU-only, VAD+CAM++ diarization)",
+        "label": "MiMo-V2.5-ASR (local or HTTP API, VAD+CAM++ diarization)",
         # Placeholder IDs — mimo preset is dispatched to mimo_asr module,
         # which loads weights from HuggingFace rather than ModelScope.
         "asr": "XiaomiMiMo/MiMo-V2.5-ASR",
@@ -1222,7 +1222,7 @@ def warn_on_incompatible_flags(lang: str, hotwords, batch_size: int,
             resolved["hotwords"] = None
         if batch_size != default_batch:
             print(f"  Warning: --batch-size ignored for --lang mimo "
-                  f"(use --mimo-batch instead; got {batch_size})")
+                  f"(MiMo segments are always processed serially; got {batch_size})")
     return resolved
 
 
@@ -1234,6 +1234,51 @@ def resolve_mimo_weights_path(cli_value: Optional[str]) -> str:
     if env:
         return env
     return str(Path.home() / ".cache" / "huggingface")
+
+
+def resolve_mimo_api_config(
+    base_url: Optional[str],
+    model: Optional[str],
+    timeout: float,
+    key_env: str,
+    environ: Optional[dict] = None,
+) -> dict:
+    """Resolve CLI-over-environment MiMo API settings without logging secrets."""
+    env = os.environ if environ is None else environ
+    resolved_base_url = (
+        base_url
+        or env.get("MIMO_BASE_URL")
+        or "https://api.xiaomimimo.com/v1"
+    ).rstrip("/")
+    resolved_model = model or env.get("MIMO_API_MODEL") or "mimo-v2.5-asr"
+    if not key_env:
+        raise ValueError("--mimo-api-key-env must not be empty")
+    return {
+        "base_url": resolved_base_url,
+        "model": resolved_model,
+        "timeout": timeout,
+        "api_key": env.get(key_env),
+    }
+
+
+def asr_engine_label(lang: str, preset: dict, *,
+                     mimo_backend: str = "local",
+                     mimo_api_model: str = "mimo-v2.5-asr") -> str:
+    """Return the runtime ASR engine label used in Markdown metadata."""
+    if lang == "mimo":
+        if mimo_backend == "api":
+            return f"MiMo API ({mimo_api_model})"
+        return "MiMo-V2.5-ASR (local)"
+    return f"FunASR ({preset['asr'].split('/')[-1]})"
+
+
+def language_label(lang: str, preset: dict, *,
+                   mimo_backend: str = "local") -> str:
+    """Return a backend-aware language/model description."""
+    if lang == "mimo":
+        backend_label = "HTTP API" if mimo_backend == "api" else "local"
+        return f"MiMo-V2.5-ASR ({backend_label}, VAD+CAM++ diarization)"
+    return preset["label"]
 
 
 def main():
@@ -1314,9 +1359,22 @@ def main():
                    choices=["<chinese>", "<english>", "<auto>"],
                    help="MiMo language hint (default: <chinese>). "
                         "Only used with --lang mimo.")
-    p.add_argument("--mimo-batch", type=int, default=1,
-                   help="Concurrent VAD segments per MiMo inference call "
-                        "(default: 1). Increase only on H100/80GB+ cards.")
+    p.add_argument("--mimo-backend", choices=["local", "api"], default="local",
+                   help="MiMo recognition backend (default: local)")
+    p.add_argument("--mimo-api-base-url", default=None,
+                   help="MiMo API base URL. CLI overrides MIMO_BASE_URL; "
+                        "default: https://api.xiaomimimo.com/v1")
+    p.add_argument("--mimo-api-model", default=None,
+                   help="MiMo API model. CLI overrides MIMO_API_MODEL; "
+                        "default: mimo-v2.5-asr")
+    p.add_argument("--mimo-api-timeout", type=float, default=120,
+                   help="MiMo API request timeout in seconds (default: 120)")
+    p.add_argument("--mimo-api-key-env", default="MIMO_API_KEY",
+                   help="Environment variable containing the MiMo API key "
+                        "(default: MIMO_API_KEY)")
+    p.add_argument("--mimo-batch", type=int, default=None,
+                   help="Deprecated compatibility option; ignored. "
+                        "MiMo segments are processed serially.")
     p.add_argument("--mimo-weights-path", type=str, default=None,
                    help="Cache directory for MiMo weights. "
                         "Default: $HF_HOME, then ~/.cache/huggingface. "
@@ -1333,6 +1391,16 @@ def main():
         args.model = args.bedrock_model
     if args.model is None:
         args.skip_llm = True
+
+    try:
+        mimo_api = resolve_mimo_api_config(
+            args.mimo_api_base_url,
+            args.mimo_api_model,
+            args.mimo_api_timeout,
+            args.mimo_api_key_env,
+        )
+    except ValueError as exc:
+        p.error(str(exc))
 
     # Set model cache dir before any FunASR import
     if args.model_cache_dir:
@@ -1382,6 +1450,9 @@ def main():
             args.lang, hotwords, args.batch_size, default_batch=300,
         )
         hotwords = resolved_compat["hotwords"]
+        if args.mimo_batch is not None:
+            print("  Warning: --mimo-batch is deprecated and ignored; "
+                  "MiMo segments are processed serially.")
 
     # Load reference materials
     reference_text = None
@@ -1453,12 +1524,17 @@ def main():
                 asr_audio,
                 num_speakers=num_speakers,
                 audio_tag=args.mimo_audio_tag,
-                batch=args.mimo_batch,
+                batch=1,
                 weights_path=mimo_weights,
                 resume=args.resume_mimo,
                 device=args.device,
                 spk_model_id=preset["spk"],
                 vad_model_id=preset["vad"],
+                backend=args.mimo_backend,
+                api_key=mimo_api["api_key"],
+                api_base_url=mimo_api["base_url"],
+                api_model=mimo_api["model"],
+                api_timeout=mimo_api["timeout"],
             )
         else:
             transcript = transcribe_with_funasr(
@@ -1550,8 +1626,15 @@ def main():
         "filename": audio_path.name,
         "duration_ms": duration_ms,
         "num_speakers": len(actual_speakers),
-        "language": preset["label"],
-        "asr_engine": f"FunASR ({preset['asr'].split('/')[-1]})",
+        "language": language_label(
+            args.lang, preset, mimo_backend=args.mimo_backend,
+        ),
+        "asr_engine": asr_engine_label(
+            args.lang,
+            preset,
+            mimo_backend=args.mimo_backend,
+            mimo_api_model=mimo_api["model"],
+        ),
         "speakers": [speaker_map.get(s, f"Speaker {s+1}") for s in actual_speakers],
         "speaker_genders": speaker_genders_by_name,
     })

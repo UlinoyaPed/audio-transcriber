@@ -472,20 +472,46 @@ python3 transcribe.py episode.flac --lang whisper --num-speakers 2 \
    Phase 0 duration validation catches conversion truncation but cannot detect
    a source file that is already incomplete.
 
-## `--lang mimo` — Xiaomi MiMo-V2.5-ASR (local, GPU)
+## `--lang mimo` — Xiaomi MiMo-V2.5-ASR (local or HTTP API)
 
 MiMo is an 8B-parameter LLM-based ASR model from Xiaomi. It outputs plain text
 with no per-sentence timestamps and no speaker labels. The `audio-transcribe`
-skill wraps it in a VAD + speaker-clustering sandwich so output format matches
-the FunASR presets:
+skill wraps either local inference or Xiaomi's HTTP API in the same VAD +
+speaker-clustering sandwich so output format matches the FunASR presets:
 
 ```
 Phase 1a  FSMN VAD           → [(start_ms, end_ms), ...]
-Phase 1b  MiMo asr_sft()     → text per VAD segment
+Phase 1b  MiMo recognition   → local asr_sft() OR /chat/completions
 Phase 1c  CAM++ + KMeans     → speaker ID per VAD segment
 ```
 
-Files: `scripts/mimo_asr.py` (orchestrator), `scripts/setup_mimo.sh` (installer).
+Files: `scripts/mimo_asr.py` (orchestrator), `scripts/mimo_api.py` (HTTP
+client), `scripts/setup_mimo.sh` (local-only installer).
+
+`--mimo-backend local` is the compatibility default. It requires the
+approximately 34 GB local installation and a CUDA GPU with at least 20 GB
+VRAM. `--mimo-backend api` skips CUDA, local-weight, repository, and model-load
+checks. VAD and CAM++ still use `--device`, including full CPU operation.
+
+API mode sends one Base64 WAV data URL at a time to
+`{base_url}/chat/completions` with the `api-key` header and `input_audio`
+message format. `<chinese>`, `<english>`, and `<auto>` map to `zh`, `en`, and
+`auto`. Calls remain serial. The API client performs one request; the
+orchestrator retries only HTTP 408/429/500/502/503/504, network failures, and
+timeouts with finite 1s, 2s, 5s, and 10s delays. HTTP 400/401/403, missing
+files, invalid JSON, and permanent response-shape errors fail immediately.
+
+API configuration precedence is:
+
+| Value | CLI | Environment | Default |
+|---|---|---|---|
+| Base URL | `--mimo-api-base-url` | `MIMO_BASE_URL` | `https://api.xiaomimimo.com/v1` |
+| Model | `--mimo-api-model` | `MIMO_API_MODEL` | `mimo-v2.5-asr` |
+| Key | `--mimo-api-key-env NAME` | value of `NAME` | `MIMO_API_KEY` |
+| Timeout | `--mimo-api-timeout` | — | 120 seconds |
+
+The API key is held only in memory and is redacted from errors. It is not
+stored in the checkpoint, raw transcript, Markdown, or logs.
 
 ### Expected RTF
 
@@ -495,8 +521,10 @@ for reported accuracy gains on dialects, code-switching, and lyrics.
 
 ### Resume (`--resume-mimo`)
 
-Segment-level failures (OOM, CUDA error) retry 3× with
-[0.5s, 2s, 5s] backoff after `gc.collect()` + `torch.cuda.empty_cache()`. If all
-retries fail, a `*_mimo_partial.json` file captures VAD segments, completed
-transcriptions, and the failed index. `--resume-mimo` picks up from the failed
-segment, verifying audio SHA256 + `--mimo-audio-tag` match before continuing.
+Local segment failures retain the existing three-attempt cleanup behavior
+using `gc.collect()` + `torch.cuda.empty_cache()`. API retry behavior is
+described above. If all attempts fail, a `*_mimo_partial.json` file captures
+the backend, model, base URL, VAD segments, completed transcriptions, and failed
+segment/time range. `--resume-mimo` verifies audio SHA256, audio tag, backend,
+model, and base URL before continuing. Legacy local checkpoints without a
+`backend` field are interpreted as `local`.

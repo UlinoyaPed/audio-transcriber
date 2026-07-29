@@ -13,7 +13,8 @@
 #   INSTALL_MIMO=1 bash setup_env.sh
 #       After the base install, also run setup_mimo.sh to clone the MiMo repo,
 #       install flash-attn, and download MiMo weights. Opt-in because the
-#       download is ~20 GB and flash-attn compile takes 10–30 min.
+#       total download is approximately 34 GB and flash-attn compile takes
+#       10–30 min.
 
 set -euo pipefail
 
@@ -127,9 +128,10 @@ else
     pip install -q torch torchaudio --index-url "https://download.pytorch.org/whl/$FORCE_VARIANT"
 fi
 
-# Install FunASR + deps (scikit-learn is new: MiMo path uses KMeans)
+# Install FunASR + shared deps. These are sufficient for MiMo API mode on CPU:
+# FSMN VAD + CAM++ run locally while httpx sends each WAV segment to MiMo.
 echo "Installing FunASR and dependencies..."
-pip install -q -U funasr modelscope boto3 scikit-learn soundfile
+pip install -q -U funasr modelscope boto3 scikit-learn soundfile httpx
 
 # Patch clustering for long audio
 if [ -f "$SCRIPT_DIR/patch_clustering.py" ]; then
