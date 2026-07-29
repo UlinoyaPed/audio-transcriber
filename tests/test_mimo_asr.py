@@ -12,9 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-import mimo_asr
+from audio_transcriber import mimo_asr
 
 
 def test_module_imports():
@@ -579,7 +577,7 @@ class TestTranscribeWithMimo:
         audio = tmp_path / "pod.flac"
         audio.write_bytes(b"fake")
         recognizer = MagicMock()
-        from mimo_api import MimoApiError
+        from audio_transcriber.mimo_api import MimoApiError
         recognizer.transcribe.side_effect = MimoApiError(
             "MiMo API returned HTTP 401"
         )
@@ -629,7 +627,7 @@ class TestTranscribeWithMimo:
         audio = tmp_path / f"pod-{status}.flac"
         audio.write_bytes(b"fake")
         recognizer = MagicMock()
-        from mimo_api import MimoApiRetryableError
+        from audio_transcriber.mimo_api import MimoApiRetryableError
         recognizer.transcribe.side_effect = [
             MimoApiRetryableError(f"MiMo API returned HTTP {status}"),
             "恢复成功",
@@ -659,7 +657,7 @@ class TestTranscribeWithMimo:
         audio.write_bytes(b"fake")
         key = "must-never-appear"
         recognizer = MagicMock()
-        from mimo_api import MimoApiRetryableError
+        from audio_transcriber.mimo_api import MimoApiRetryableError
         recognizer.transcribe.side_effect = MimoApiRetryableError(
             f"timeout detail {key}"
         )
@@ -771,12 +769,12 @@ class TestResolveHfSnapshot:
 
 class TestCliWiring:
     def test_lang_mimo_in_supported(self):
-        import transcribe as tf
+        from audio_transcriber import transcribe as tf
         assert "mimo" in tf.SUPPORTED_LANGS
         assert "mimo" in tf.MODEL_PRESETS
 
     def test_hotwords_warning_with_mimo(self, capsys):
-        import transcribe as tf
+        from audio_transcriber import transcribe as tf
         resolved = tf.warn_on_incompatible_flags(
             lang="mimo", hotwords="foo bar", batch_size=300, default_batch=300,
         )
@@ -785,7 +783,7 @@ class TestCliWiring:
         assert "hotwords" in captured.out.lower()
 
     def test_batch_size_warning_with_mimo(self, capsys):
-        import transcribe as tf
+        from audio_transcriber import transcribe as tf
         tf.warn_on_incompatible_flags(
             lang="mimo", hotwords=None, batch_size=100, default_batch=300,
         )
@@ -793,7 +791,7 @@ class TestCliWiring:
         assert "batch-size" in captured.out.lower() or "batch_size" in captured.out.lower()
 
     def test_no_warning_with_zh(self, capsys):
-        import transcribe as tf
+        from audio_transcriber import transcribe as tf
         tf.warn_on_incompatible_flags(
             lang="zh", hotwords="foo", batch_size=300, default_batch=300,
         )
@@ -801,7 +799,7 @@ class TestCliWiring:
         assert captured.out.strip() == ""
 
     def test_weights_path_precedence(self, monkeypatch):
-        import transcribe as tf
+        from audio_transcriber import transcribe as tf
         monkeypatch.setenv("HF_HOME", "/env/hf")
         assert tf.resolve_mimo_weights_path("/cli/hf") == "/cli/hf"
         assert tf.resolve_mimo_weights_path(None) == "/env/hf"
@@ -811,7 +809,7 @@ class TestCliWiring:
         )
 
     def test_api_config_cli_overrides_environment(self):
-        import transcribe as tf
+        from audio_transcriber import transcribe as tf
         config = tf.resolve_mimo_api_config(
             "https://cli.example/v1/",
             "cli-model",
@@ -831,7 +829,7 @@ class TestCliWiring:
         }
 
     def test_api_config_environment_then_defaults(self):
-        import transcribe as tf
+        from audio_transcriber import transcribe as tf
         env_config = tf.resolve_mimo_api_config(
             None,
             None,
@@ -852,7 +850,7 @@ class TestCliWiring:
         assert default_config["model"] == "mimo-v2.5-asr"
 
     def test_markdown_asr_engine_labels(self):
-        import transcribe as tf
+        from audio_transcriber import transcribe as tf
         mimo = tf.MODEL_PRESETS["mimo"]
         assert tf.asr_engine_label(
             "mimo", mimo, mimo_backend="api", mimo_api_model="mimo-v2.5-asr"

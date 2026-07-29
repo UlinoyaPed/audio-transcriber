@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audio-transcriber"
+version = "2.0.0"
+description = "Multi-engine audio transcription with speaker diarization"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "zxkane"}]
+dependencies = [
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+test = [
+  "huggingface-hub>=0.27",
+  "numpy>=1.26",
+  "pytest>=8",
+  "scikit-learn>=1.4",
+]
+
+[project.scripts]
+audio-transcriber = "audio_transcriber.transcribe:main"
+audio-transcriber-verify-speakers = "audio_transcriber.verify_speakers:main"
+audio-transcriber-patch-clustering = "audio_transcriber.patch_clustering:main"
+
+[tool.setuptools.packages.find]
+include = ["audio_transcriber*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

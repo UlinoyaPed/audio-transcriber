@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install MiMo-V2.5-ASR: clone the reference repo, install flash-attn, and
 # download HF weights. Called automatically by setup_env.sh when
-# INSTALL_MIMO=1, or can be run standalone.
+# INSTALL_MIMO=1, or can be run standalone after scripts/setup_env.sh.
 #
 # Environment:
 #   VENV_DIR             — path to the active venv (default: .venv)
@@ -28,7 +28,7 @@ echo ""
 
 # Require active venv
 if [ ! -d "$VENV_DIR" ]; then
-    echo "ERROR: venv not found at $VENV_DIR. Run setup_env.sh first."
+    echo "ERROR: venv not found at $VENV_DIR. Run scripts/setup_env.sh first."
     exit 1
 fi
 # shellcheck disable=SC1091
@@ -124,5 +124,5 @@ HF_HOME="$MIMO_WEIGHTS_PATH" \
 
 echo ""
 echo "=== MiMo install complete ==="
-echo "  Use with: python3 transcribe.py <audio> --lang mimo \\"
+echo "  Use with: audio-transcriber <audio> --lang mimo \\"
 echo "               --mimo-weights-path $MIMO_WEIGHTS_PATH"

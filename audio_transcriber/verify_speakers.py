@@ -13,22 +13,22 @@ Inputs:
 
 Usage:
   # Dry-run: just check if labels are swapped
-  python3 verify_speakers.py podcast_raw_transcript.json \
+  audio-transcriber-verify-speakers podcast_raw_transcript.json \
       --speakers "关羽,张飞" \
       --speaker-context speaker-context.json
 
   # Fix in place: rewrite the JSON with corrected speaker IDs
-  python3 verify_speakers.py podcast_raw_transcript.json \
+  audio-transcriber-verify-speakers podcast_raw_transcript.json \
       --speakers "关羽,张飞" \
       --speaker-context speaker-context.json --fix
 
   # Multi-speaker meeting: full reassignment
-  python3 verify_speakers.py meeting_raw_transcript.json \
+  audio-transcriber-verify-speakers meeting_raw_transcript.json \
       --speakers "Alice,Bob,Carol,Dave" \
       --speaker-context speaker-context.json --fix
 
   # Use different LLM / analysis window
-  python3 verify_speakers.py podcast_raw_transcript.json \
+  audio-transcriber-verify-speakers podcast_raw_transcript.json \
       --speakers "Host,Guest" \
       --speaker-context ctx.json \
       --minutes 5 --model claude-sonnet-4-6
@@ -41,7 +41,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from llm_utils import call_llm, detect_llm_provider
+from .llm_utils import call_llm, detect_llm_provider
 
 
 # ──────────────────────────────────────────────

@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from mimo_api import MimoApiRecognizer, MimoApiRetryableError
+from .mimo_api import MimoApiRecognizer, MimoApiRetryableError
 
 
 LOCAL_MODEL_ID = "XiaomiMiMo/MiMo-V2.5-ASR"

@@ -19,35 +19,35 @@ First run auto-downloads models from ModelScope.
 
 Usage:
   # Chinese meeting with hotwords (names, terms)
-  python3 transcribe.py meeting.wav --lang zh --num-speakers 9 \\
+  audio-transcriber meeting.wav --lang zh --num-speakers 9 \\
       --hotwords "张三 李四 ClawCon Rebase"
 
   # Hotwords from file (one per line)
-  python3 transcribe.py meeting.wav --lang zh --hotwords hotwords.txt
+  audio-transcriber meeting.wav --lang zh --hotwords hotwords.txt
 
   # English meeting
-  python3 transcribe.py meeting.wav --lang en --num-speakers 4
+  audio-transcriber meeting.wav --lang en --num-speakers 4
 
   # Auto-detect language (no speaker diarization — use zh/en for that)
-  python3 transcribe.py meeting.wav --lang auto
+  audio-transcriber meeting.wav --lang auto
 
   # Whisper for any language (no speaker diarization — use zh/en for that)
-  python3 transcribe.py meeting.wav --lang whisper
+  audio-transcriber meeting.wav --lang whisper
 
   # With real speaker names
-  python3 transcribe.py meeting.wav --speakers "Alice,Bob,Carol"
+  audio-transcriber meeting.wav --speakers "Alice,Bob,Carol"
 
   # CPU mode
-  python3 transcribe.py meeting.wav --lang zh --device cpu
+  audio-transcriber meeting.wav --lang zh --device cpu
 
   # Raw transcription only (no LLM)
-  python3 transcribe.py meeting.wav --skip-llm
+  audio-transcriber meeting.wav --skip-llm
 
   # Resume interrupted LLM cleanup
-  python3 transcribe.py meeting.wav --skip-transcribe
+  audio-transcriber meeting.wav --skip-transcribe
 
   # Speaker context JSON to help LLM identify speakers
-  python3 transcribe.py meeting.wav --speaker-context context.json
+  audio-transcriber meeting.wav --speaker-context context.json
 """
 
 import argparse
@@ -61,8 +61,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from llm_utils import call_llm, detect_llm_provider
-from speaker_gender import (
+from .llm_utils import call_llm, detect_llm_provider
+from .speaker_gender import (
     classify_speaker_gender,
     extract_gender_from_reference,
     format_gender_label,
@@ -1518,7 +1518,7 @@ def main():
             print(f"Error: {audio_path} not found")
             sys.exit(1)
         if args.lang == "mimo":
-            import mimo_asr
+            from . import mimo_asr
             mimo_weights = resolve_mimo_weights_path(args.mimo_weights_path)
             transcript = mimo_asr.transcribe_with_mimo(
                 asr_audio,

@@ -21,14 +21,11 @@ output/
 # FunASR model cache
 *.cache/
 
-# Claude Code local files
+# Local environment files
 *.local.*
 .local.json
-CLAUDE.local.md
 .env
 .env.*
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
 
 # IDE
 .vscode/
@@ -45,9 +42,6 @@ CLAUDE.local.md
 .kiro/
 .trae/
 .windsurf/
-
-# skills.sh lock file — tracked so others can run `npx skills install`
-# skills-lock.json
 
 # Temp files
 tmp/

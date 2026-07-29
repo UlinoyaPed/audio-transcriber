@@ -6,11 +6,11 @@
 # is not set, to keep dependency resolution consistent across presets).
 #
 # Usage:
-#   bash setup_env.sh            # auto-detect CUDA
-#   bash setup_env.sh cpu        # force CPU-only
-#   bash setup_env.sh cu121      # force CUDA 12.1
+#   bash scripts/setup_env.sh            # auto-detect CUDA
+#   bash scripts/setup_env.sh cpu        # force CPU-only
+#   bash scripts/setup_env.sh cu121      # force CUDA 12.1
 #
-#   INSTALL_MIMO=1 bash setup_env.sh
+#   INSTALL_MIMO=1 bash scripts/setup_env.sh
 #       After the base install, also run setup_mimo.sh to clone the MiMo repo,
 #       install flash-attn, and download MiMo weights. Opt-in because the
 #       total download is approximately 34 GB and flash-attn compile takes
@@ -24,6 +24,7 @@ AUTO_YES="${AUTO_YES:-}"
 INSTALL_MIMO="${INSTALL_MIMO:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "=== Audio Transcriber Environment Setup ==="
 echo ""
@@ -132,17 +133,13 @@ fi
 # FSMN VAD + CAM++ run locally while httpx sends each WAV segment to MiMo.
 echo "Installing FunASR and dependencies..."
 pip install -q -U funasr modelscope boto3 scikit-learn soundfile httpx
+pip install -q -e "$PROJECT_ROOT" --no-deps
 
 # Patch clustering for long audio
-if [ -f "$SCRIPT_DIR/patch_clustering.py" ]; then
-    echo "Applying clustering optimization patch..."
-    if ! python3 "$SCRIPT_DIR/patch_clustering.py" --yes; then
-        echo "WARNING: Clustering patch failed. Long recordings (>1h) may be very slow."
-        echo "  You can retry manually: python3 $SCRIPT_DIR/patch_clustering.py --yes"
-    fi
-else
-    echo "WARNING: patch_clustering.py not found at $SCRIPT_DIR"
-    echo "  Long-audio clustering optimization will not be applied."
+echo "Applying clustering optimization patch..."
+if ! audio-transcriber-patch-clustering --yes; then
+    echo "WARNING: Clustering patch failed. Long recordings (>1h) may be very slow."
+    echo "  You can retry manually: audio-transcriber-patch-clustering --yes"
 fi
 
 # Optional: install MiMo

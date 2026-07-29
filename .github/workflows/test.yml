@@ -4,11 +4,15 @@ on:
   push:
     branches: [main]
     paths:
-      - 'plugins/audio-transcriber/skills/audio-transcribe/scripts/**'
+      - 'audio_transcriber/**'
+      - 'tests/**'
+      - 'pyproject.toml'
       - '.github/workflows/test.yml'
   pull_request:
     paths:
-      - 'plugins/audio-transcriber/skills/audio-transcribe/scripts/**'
+      - 'audio_transcriber/**'
+      - 'tests/**'
+      - 'pyproject.toml'
       - '.github/workflows/test.yml'
 
 permissions:
@@ -28,8 +32,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install test dependencies
-        run: pip install pytest
+        run: pip install -e ".[test]"
 
       - name: Run tests
-        working-directory: plugins/audio-transcriber/skills/audio-transcribe/scripts
-        run: python -m pytest test_speaker_verification.py -v
+        run: python -m pytest -q

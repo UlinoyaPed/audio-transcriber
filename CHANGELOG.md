@@ -4,6 +4,9 @@
 
 ### Added
 
+- A standalone installable Python package with `audio-transcriber`,
+  `audio-transcriber-verify-speakers`, and
+  `audio-transcriber-patch-clustering` console commands.
 - Xiaomi MiMo HTTP API backend selected with `--mimo-backend api`, using the
   `/chat/completions` `input_audio` protocol and `api-key` authentication.
 - CLI/environment configuration for API base URL, model, timeout, and API-key
@@ -16,6 +19,8 @@
 
 ### Changed
 
+- Runtime modules now live in `audio_transcriber/`; setup scripts live in
+  `scripts/`, tests in `tests/`, and current documentation in `docs/`.
 - MiMo recognition is now a switchable local/API stage; FSMN VAD, CAM++,
   post-processing, resume behavior, and Markdown output remain shared.
 - Added `httpx` to the base environment so API mode works without
@@ -24,6 +29,11 @@
   serial.
 - Markdown metadata now identifies the actual MiMo backend instead of always
   reporting FunASR.
+
+### Removed
+
+- Claude Code Skill/plugin, ClawHub, and `skills.sh` packaging. The project is
+  now a standalone Python CLI; ASR and LLM provider APIs remain available.
 
 ## 1.7.1 (2026-05-01)
 

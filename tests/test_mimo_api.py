@@ -3,16 +3,12 @@
 
 import base64
 import json
-import sys
 import traceback
-from pathlib import Path
 
 import httpx
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from mimo_api import (  # noqa: E402
+from audio_transcriber.mimo_api import (
     MimoApiError,
     MimoApiRecognizer,
     MimoApiRetryableError,

@@ -13,12 +13,10 @@ from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from llm_utils import detect_llm_provider, is_retryable, call_llm
-import speaker_gender as sg
-import transcribe as tf
-import verify_speakers as vs
+from audio_transcriber.llm_utils import detect_llm_provider, is_retryable, call_llm
+from audio_transcriber import speaker_gender as sg
+from audio_transcriber import transcribe as tf
+from audio_transcriber import verify_speakers as vs
 
 
 # ──────────────────────────────────────────────
@@ -136,39 +134,39 @@ class TestIsRetryable:
 # ──────────────────────────────────────────────
 
 class TestCallLLM:
-    @patch("llm_utils._call_anthropic", return_value="test response")
+    @patch("audio_transcriber.llm_utils._call_anthropic", return_value="test response")
     def test_anthropic_routing(self, mock_call):
         result = call_llm("sys", "user", "claude-sonnet-4-6")
         assert result == "test response"
         mock_call.assert_called_once_with("sys", "user", "claude-sonnet-4-6")
 
-    @patch("llm_utils._call_bedrock", return_value="bedrock response")
+    @patch("audio_transcriber.llm_utils._call_bedrock", return_value="bedrock response")
     def test_bedrock_routing(self, mock_call):
         result = call_llm("sys", "user", "us.anthropic.claude-sonnet-4-6", region="us-east-1")
         assert result == "bedrock response"
         mock_call.assert_called_once_with("sys", "user", "us.anthropic.claude-sonnet-4-6", "us-east-1")
 
-    @patch("llm_utils._call_openai", return_value="openai response")
+    @patch("audio_transcriber.llm_utils._call_openai", return_value="openai response")
     def test_openai_routing(self, mock_call):
         result = call_llm("sys", "user", "gpt-4o")
         assert result == "openai response"
         mock_call.assert_called_once_with("sys", "user", "gpt-4o")
 
-    @patch("llm_utils._call_anthropic")
+    @patch("audio_transcriber.llm_utils._call_anthropic")
     def test_retry_on_rate_limit(self, mock_call):
         mock_call.side_effect = [Exception("rate_limit_exceeded"), "ok"]
         result = call_llm("sys", "user", "claude-sonnet-4-6", max_retries=2)
         assert result == "ok"
         assert mock_call.call_count == 2
 
-    @patch("llm_utils._call_anthropic")
+    @patch("audio_transcriber.llm_utils._call_anthropic")
     def test_no_retry_on_auth_error(self, mock_call):
         mock_call.side_effect = Exception("invalid api key")
         with pytest.raises(Exception, match="invalid api key"):
             call_llm("sys", "user", "claude-sonnet-4-6", max_retries=3)
         assert mock_call.call_count == 1
 
-    @patch("llm_utils._call_bedrock", return_value="response")
+    @patch("audio_transcriber.llm_utils._call_bedrock", return_value="response")
     def test_default_region(self, mock_call):
         call_llm("sys", "user", "us.anthropic.claude-sonnet-4-6")
         mock_call.assert_called_once_with("sys", "user", "us.anthropic.claude-sonnet-4-6", "us-west-2")
@@ -332,7 +330,7 @@ class TestApplyMeetingMapping:
 # ──────────────────────────────────────────────
 
 class TestVerifyPodcast:
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_correct_verdict(self, mock_llm):
         mock_llm.return_value = "VERDICT: CORRECT\nCONFIDENCE: HIGH\nEVIDENCE: labels match roles"
         speaker_map = {0: "Host", 1: "Guest"}
@@ -341,7 +339,7 @@ class TestVerifyPodcast:
         assert result["verdict"] == "CORRECT"
         assert result["confidence"] == "HIGH"
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_swap_verdict(self, mock_llm):
         mock_llm.return_value = "VERDICT: SWAP\nCONFIDENCE: HIGH\nEVIDENCE: host is answering"
         speaker_map = {0: "Host", 1: "Guest"}
@@ -349,7 +347,7 @@ class TestVerifyPodcast:
         result = vs.verify_podcast("transcript text", speaker_map, ctx, "model", "us-west-2")
         assert result["verdict"] == "SWAP"
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_malformed_response(self, mock_llm):
         mock_llm.return_value = "I cannot determine the speaker roles from this text."
         speaker_map = {0: "Host", 1: "Guest"}
@@ -364,7 +362,7 @@ class TestVerifyPodcast:
 # ──────────────────────────────────────────────
 
 class TestVerifyMeeting:
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_correct_mapping(self, mock_llm):
         mock_llm.return_value = json.dumps({
             "correct": True,
@@ -378,7 +376,7 @@ class TestVerifyMeeting:
         assert result["correct"] is True
         assert result["mapping"]["Alice"] == "Alice"
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_swapped_mapping(self, mock_llm):
         mock_llm.return_value = '```json\n{"correct": false, "confidence": "HIGH", "mapping": {"Alice": "Bob", "Bob": "Alice"}, "evidence": {}}\n```'
         speaker_map = {0: "Alice", 1: "Bob"}
@@ -387,7 +385,7 @@ class TestVerifyMeeting:
         assert result["correct"] is False
         assert result["mapping"]["Alice"] == "Bob"
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_no_json_in_response(self, mock_llm):
         mock_llm.return_value = "I'm not sure about the speaker assignments."
         speaker_map = {0: "Alice", 1: "Bob"}
@@ -396,7 +394,7 @@ class TestVerifyMeeting:
         assert result["correct"] is None
         assert "raw" in result
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_invalid_json_in_response(self, mock_llm):
         mock_llm.return_value = '{"mapping": invalid json here}'
         speaker_map = {0: "Alice", 1: "Bob"}
@@ -969,7 +967,7 @@ class TestParseFunasrResults:
 # ──────────────────────────────────────────────
 
 class TestVerifySpeakerRolesViaLLM:
-    @patch("transcribe.call_llm", return_value="CORRECT")
+    @patch("audio_transcriber.transcribe.call_llm", return_value="CORRECT")
     def test_correct_keeps_map(self, mock_llm):
         speaker_map = {0: "Host", 1: "Guest"}
         ctx = {"Host": "asks questions", "Guest": "answers"}
@@ -977,7 +975,7 @@ class TestVerifySpeakerRolesViaLLM:
         assert result[0] == "Host"
         assert result[1] == "Guest"
 
-    @patch("transcribe.call_llm", return_value="SWAP")
+    @patch("audio_transcriber.transcribe.call_llm", return_value="SWAP")
     def test_swap_two_speakers(self, mock_llm):
         speaker_map = {0: "Host", 1: "Guest"}
         ctx = {"Host": "asks questions", "Guest": "answers"}
@@ -985,7 +983,7 @@ class TestVerifySpeakerRolesViaLLM:
         assert result[0] == "Guest"
         assert result[1] == "Host"
 
-    @patch("transcribe.call_llm", return_value="I'm not sure about this")
+    @patch("audio_transcriber.transcribe.call_llm", return_value="I'm not sure about this")
     def test_ambiguous_keeps_map(self, mock_llm):
         speaker_map = {0: "Host", 1: "Guest"}
         ctx = {"Host": "asks questions", "Guest": "answers"}
@@ -993,7 +991,7 @@ class TestVerifySpeakerRolesViaLLM:
         assert result[0] == "Host"
         assert result[1] == "Guest"
 
-    @patch("transcribe.call_llm")
+    @patch("audio_transcriber.transcribe.call_llm")
     def test_llm_failure_keeps_map(self, mock_llm):
         mock_llm.side_effect = RuntimeError("API error")
         speaker_map = {0: "Host", 1: "Guest"}
@@ -1002,7 +1000,7 @@ class TestVerifySpeakerRolesViaLLM:
         assert result[0] == "Host"
         assert result[1] == "Guest"
 
-    @patch("transcribe.call_llm")
+    @patch("audio_transcriber.transcribe.call_llm")
     def test_import_error_propagates(self, mock_llm):
         mock_llm.side_effect = ImportError("No module named 'boto3'")
         speaker_map = {0: "Host", 1: "Guest"}
@@ -1010,7 +1008,7 @@ class TestVerifySpeakerRolesViaLLM:
         with pytest.raises(ImportError):
             tf._verify_speaker_roles_via_llm("text", speaker_map, ctx, "model", "us-west-2")
 
-    @patch("transcribe.call_llm")
+    @patch("audio_transcriber.transcribe.call_llm")
     def test_multi_speaker_json_swap(self, mock_llm):
         mock_llm.return_value = json.dumps({
             "correct": False,
@@ -1023,7 +1021,7 @@ class TestVerifySpeakerRolesViaLLM:
         assert result[1] == "Alice"
         assert result[2] == "Carol"
 
-    @patch("transcribe.call_llm")
+    @patch("audio_transcriber.transcribe.call_llm")
     def test_multi_speaker_correct(self, mock_llm):
         mock_llm.return_value = json.dumps({
             "correct": True,
@@ -1034,7 +1032,7 @@ class TestVerifySpeakerRolesViaLLM:
         result = tf._verify_speaker_roles_via_llm("text", speaker_map, ctx, "model", "us-west-2")
         assert result[0] == "Alice"
 
-    @patch("transcribe.call_llm")
+    @patch("audio_transcriber.transcribe.call_llm")
     def test_multi_speaker_invalid_json_keeps_map(self, mock_llm):
         mock_llm.return_value = "not valid json at all"
         speaker_map = {0: "Alice", 1: "Bob", 2: "Carol"}
@@ -1042,7 +1040,7 @@ class TestVerifySpeakerRolesViaLLM:
         result = tf._verify_speaker_roles_via_llm("text", speaker_map, ctx, "model", "us-west-2")
         assert result == {0: "Alice", 1: "Bob", 2: "Carol"}
 
-    @patch("transcribe.call_llm")
+    @patch("audio_transcriber.transcribe.call_llm")
     def test_multi_speaker_three_way_cycle(self, mock_llm):
         mock_llm.return_value = json.dumps({
             "correct": False,
@@ -1055,7 +1053,7 @@ class TestVerifySpeakerRolesViaLLM:
         assert result[1] == "Carol"
         assert result[2] == "Alice"
 
-    @patch("transcribe.call_llm")
+    @patch("audio_transcriber.transcribe.call_llm")
     def test_multi_speaker_duplicate_targets_rejected(self, mock_llm):
         mock_llm.return_value = json.dumps({
             "correct": False,
@@ -1079,13 +1077,13 @@ class TestVerifySpeakersMain:
         ctx_path.write_text(json.dumps(context, ensure_ascii=False), encoding="utf-8")
         return json_path, ctx_path
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_podcast_swap_dryrun(self, mock_llm, two_speaker_transcript,
                                   speaker_context_podcast, tmp_path):
         mock_llm.return_value = "VERDICT: SWAP\nCONFIDENCE: HIGH\nEVIDENCE: labels are swapped"
         json_path, ctx_path = self._write_fixtures(
             tmp_path, two_speaker_transcript, speaker_context_podcast)
-        sys.argv = ["verify_speakers.py", str(json_path),
+        sys.argv = ["audio_transcriber.verify_speakers.py", str(json_path),
                      "--speakers", "关羽,张飞",
                      "--speaker-context", str(ctx_path)]
         vs.main()
@@ -1093,13 +1091,13 @@ class TestVerifySpeakersMain:
             data = json.load(f)
         assert data[0]["speaker"] == 0  # unchanged — dry-run doesn't modify
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_podcast_swap_fix(self, mock_llm, two_speaker_transcript,
                                speaker_context_podcast, tmp_path):
         mock_llm.return_value = "VERDICT: SWAP\nCONFIDENCE: HIGH\nEVIDENCE: labels are swapped"
         json_path, ctx_path = self._write_fixtures(
             tmp_path, two_speaker_transcript, speaker_context_podcast)
-        sys.argv = ["verify_speakers.py", str(json_path),
+        sys.argv = ["audio_transcriber.verify_speakers.py", str(json_path),
                      "--speakers", "关羽,张飞",
                      "--speaker-context", str(ctx_path), "--fix"]
         vs.main()
@@ -1107,13 +1105,13 @@ class TestVerifySpeakersMain:
             data = json.load(f)
         assert data[0]["speaker"] == 1  # swapped
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_podcast_correct_no_changes(self, mock_llm, two_speaker_transcript,
                                          speaker_context_podcast, tmp_path):
         mock_llm.return_value = "VERDICT: CORRECT\nCONFIDENCE: HIGH\nEVIDENCE: looks good"
         json_path, ctx_path = self._write_fixtures(
             tmp_path, two_speaker_transcript, speaker_context_podcast)
-        sys.argv = ["verify_speakers.py", str(json_path),
+        sys.argv = ["audio_transcriber.verify_speakers.py", str(json_path),
                      "--speakers", "关羽,张飞",
                      "--speaker-context", str(ctx_path), "--fix"]
         vs.main()
@@ -1121,26 +1119,26 @@ class TestVerifySpeakersMain:
             data = json.load(f)
         assert data[0]["speaker"] == 0  # unchanged
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_unknown_verdict_exits_2(self, mock_llm, two_speaker_transcript,
                                       speaker_context_podcast, tmp_path):
         mock_llm.return_value = "VERDICT: MAYBE\nCONFIDENCE: LOW\nEVIDENCE: unclear"
         json_path, ctx_path = self._write_fixtures(
             tmp_path, two_speaker_transcript, speaker_context_podcast)
-        sys.argv = ["verify_speakers.py", str(json_path),
+        sys.argv = ["audio_transcriber.verify_speakers.py", str(json_path),
                      "--speakers", "关羽,张飞",
                      "--speaker-context", str(ctx_path)]
         with pytest.raises(SystemExit) as exc_info:
             vs.main()
         assert exc_info.value.code == 2
 
-    @patch("verify_speakers.call_llm")
+    @patch("audio_transcriber.verify_speakers.call_llm")
     def test_meeting_inconclusive_exits_2(self, mock_llm, four_speaker_transcript,
                                            speaker_context_meeting, tmp_path):
         mock_llm.return_value = "I don't know"
         json_path, ctx_path = self._write_fixtures(
             tmp_path, four_speaker_transcript, speaker_context_meeting)
-        sys.argv = ["verify_speakers.py", str(json_path),
+        sys.argv = ["audio_transcriber.verify_speakers.py", str(json_path),
                      "--speakers", "Alice,Bob,Carol,Dave",
                      "--speaker-context", str(ctx_path)]
         with pytest.raises(SystemExit) as exc_info:
@@ -1150,7 +1148,7 @@ class TestVerifySpeakersMain:
     def test_missing_context_file_exits_1(self, two_speaker_transcript, tmp_path):
         json_path = tmp_path / "transcript.json"
         json_path.write_text(json.dumps(two_speaker_transcript), encoding="utf-8")
-        sys.argv = ["verify_speakers.py", str(json_path),
+        sys.argv = ["audio_transcriber.verify_speakers.py", str(json_path),
                      "--speakers", "A,B",
                      "--speaker-context", str(tmp_path / "nonexistent.json")]
         with pytest.raises(SystemExit) as exc_info:
@@ -1162,7 +1160,7 @@ class TestVerifySpeakersMain:
         json_path.write_text(json.dumps(two_speaker_transcript), encoding="utf-8")
         ctx_path = tmp_path / "bad.json"
         ctx_path.write_text("not valid json {{{", encoding="utf-8")
-        sys.argv = ["verify_speakers.py", str(json_path),
+        sys.argv = ["audio_transcriber.verify_speakers.py", str(json_path),
                      "--speakers", "A,B",
                      "--speaker-context", str(ctx_path)]
         with pytest.raises(SystemExit) as exc_info:
@@ -1180,7 +1178,7 @@ class TestPhase1Flags:
     def _parse(self, extra_args):
         """Parse CLI args with defaults suitable for testing."""
         base = ["test.wav"]
-        with patch("sys.argv", ["transcribe.py"] + base + extra_args):
+        with patch("sys.argv", ["audio_transcriber.transcribe.py"] + base + extra_args):
             p = argparse.ArgumentParser()
             p.add_argument("audio_file")
             p.add_argument("--phase1-only", action="store_true")
@@ -1236,7 +1234,7 @@ class TestPhase1Flags:
 
         md_path = tmp_path / "test-transcript.md"
         test_args = [
-            "transcribe.py",
+            "audio_transcriber.transcribe.py",
             str(tmp_path / "test.wav"),
             "--phase1-only",
             "--skip-transcribe",
@@ -1259,7 +1257,7 @@ class TestPhase1Flags:
             make_segment(1, 5000, 10000, "World"),
         ]
         with patch("sys.argv", [
-                "transcribe.py", str(tmp_path / "test.wav"),
+                "audio_transcriber.transcribe.py", str(tmp_path / "test.wav"),
                 "--json-out", str(custom_json),
                 "--skip-llm", "--device", "cpu",
             ]), \
@@ -1286,7 +1284,7 @@ class TestPhase1Flags:
             return True
 
         with patch("sys.argv", [
-                "transcribe.py", str(tmp_path / "test.wav"),
+                "audio_transcriber.transcribe.py", str(tmp_path / "test.wav"),
                 "--skip-llm", "--device", "cpu",
                 "--output", str(output_md),
                 "--json-out", str(raw_json),
@@ -1305,7 +1303,7 @@ class TestPhase1Flags:
         """--json-out to a nonexistent directory exits with code 1."""
         bad_path = tmp_path / "nonexistent" / "dir" / "out.json"
         test_args = [
-            "transcribe.py",
+            "audio_transcriber.transcribe.py",
             str(tmp_path / "test.wav"),
             "--json-out", str(bad_path),
             "--device", "cpu",
@@ -1321,7 +1319,7 @@ class TestPhase1Flags:
         with open(raw_json, "w") as f:
             json.dump([], f)
         test_args = [
-            "transcribe.py",
+            "audio_transcriber.transcribe.py",
             str(tmp_path / "test.wav"),
             "--phase1-only",
             "--skip-transcribe",
@@ -1341,7 +1339,7 @@ class TestPhase1Flags:
         ]
         custom_json = tmp_path / "phase1_out.json"
         with patch("sys.argv", [
-                "transcribe.py", str(tmp_path / "test.wav"),
+                "audio_transcriber.transcribe.py", str(tmp_path / "test.wav"),
                 "--phase1-only",
                 "--json-out", str(custom_json),
                 "--device", "cpu",
@@ -1976,8 +1974,8 @@ class TestCallLLMExplicitProvider:
 
     def test_explicit_bedrock_over_anthropic_id(self):
         """Force Bedrock even when model ID is a bare 'claude-*' form."""
-        with patch("llm_utils._call_bedrock", return_value="ok") as mock_bed, \
-             patch("llm_utils._call_anthropic", return_value="wrong") as mock_ant:
+        with patch("audio_transcriber.llm_utils._call_bedrock", return_value="ok") as mock_bed, \
+             patch("audio_transcriber.llm_utils._call_anthropic", return_value="wrong") as mock_ant:
             result = call_llm(
                 "sys", "msg", "claude-sonnet-4-6",
                 region="us-west-2", provider="bedrock")
@@ -1986,8 +1984,8 @@ class TestCallLLMExplicitProvider:
             mock_ant.assert_not_called()
 
     def test_explicit_anthropic_over_bedrock_id(self):
-        with patch("llm_utils._call_anthropic", return_value="ok") as mock_ant, \
-             patch("llm_utils._call_bedrock", return_value="wrong"):
+        with patch("audio_transcriber.llm_utils._call_anthropic", return_value="ok") as mock_ant, \
+             patch("audio_transcriber.llm_utils._call_bedrock", return_value="wrong"):
             result = call_llm(
                 "sys", "msg", "us.anthropic.claude-sonnet-4-6",
                 provider="anthropic")
@@ -1995,7 +1993,7 @@ class TestCallLLMExplicitProvider:
             mock_ant.assert_called_once()
 
     def test_no_provider_falls_back_to_detect(self):
-        with patch("llm_utils._call_bedrock", return_value="ok") as mock_bed:
+        with patch("audio_transcriber.llm_utils._call_bedrock", return_value="ok") as mock_bed:
             result = call_llm(
                 "sys", "msg", "global.anthropic.claude-sonnet-4-6",
                 region="us-west-2")
@@ -2015,7 +2013,7 @@ class TestCallLLMBedrockWrapperStripped:
             captured["model_id"] = model_id
             return "ok"
 
-        with patch("llm_utils._call_bedrock", side_effect=fake_bedrock):
+        with patch("audio_transcriber.llm_utils._call_bedrock", side_effect=fake_bedrock):
             call_llm("sys", "msg",
                      "amazon-bedrock/global.anthropic.claude-sonnet-4-6",
                      region="us-west-2")
@@ -2029,7 +2027,7 @@ class TestCallLLMBedrockWrapperStripped:
             captured["model_id"] = model_id
             return "ok"
 
-        with patch("llm_utils._call_bedrock", side_effect=fake_bedrock):
+        with patch("audio_transcriber.llm_utils._call_bedrock", side_effect=fake_bedrock):
             call_llm("sys", "msg",
                      "bedrock/us.anthropic.claude-sonnet-4-6",
                      region="us-west-2")
@@ -2043,7 +2041,7 @@ class TestCallLLMBedrockWrapperStripped:
             captured["model_id"] = model_id
             return "ok"
 
-        with patch("llm_utils._call_bedrock", side_effect=fake_bedrock):
+        with patch("audio_transcriber.llm_utils._call_bedrock", side_effect=fake_bedrock):
             call_llm("sys", "msg",
                      "us.anthropic.claude-sonnet-4-6",
                      region="us-west-2")
@@ -2059,22 +2057,22 @@ class TestStripBedrockWrapperMalformed:
     raise loudly instead of forwarding a bad ID to boto3."""
 
     def test_double_slash_typo_raises(self):
-        from llm_utils import strip_bedrock_wrapper
+        from audio_transcriber.llm_utils import strip_bedrock_wrapper
         with pytest.raises(ValueError, match="Malformed Bedrock model ID"):
             strip_bedrock_wrapper("bedrock//foo")
 
     def test_amazon_bedrock_double_slash_raises(self):
-        from llm_utils import strip_bedrock_wrapper
+        from audio_transcriber.llm_utils import strip_bedrock_wrapper
         with pytest.raises(ValueError, match="Malformed Bedrock model ID"):
             strip_bedrock_wrapper("amazon-bedrock//global.anthropic.claude-sonnet-4-6")
 
     def test_bare_wrapper_raises(self):
-        from llm_utils import strip_bedrock_wrapper
+        from audio_transcriber.llm_utils import strip_bedrock_wrapper
         with pytest.raises(ValueError, match="Malformed Bedrock model ID"):
             strip_bedrock_wrapper("bedrock/")
 
     def test_valid_input_unchanged(self):
-        from llm_utils import strip_bedrock_wrapper
+        from audio_transcriber.llm_utils import strip_bedrock_wrapper
         assert strip_bedrock_wrapper("us.anthropic.claude-sonnet-4-6") == \
                "us.anthropic.claude-sonnet-4-6"
 
@@ -2085,7 +2083,7 @@ class TestCallLLMProviderMismatch:
     the override choice."""
 
     def test_mismatch_note_printed(self, capsys):
-        with patch("llm_utils._call_anthropic", return_value="ok"):
+        with patch("audio_transcriber.llm_utils._call_anthropic", return_value="ok"):
             call_llm("sys", "msg",
                      "us.anthropic.claude-sonnet-4-6",
                      provider="anthropic")
@@ -2093,7 +2091,7 @@ class TestCallLLMProviderMismatch:
         assert "explicit --provider=anthropic overrides detected provider=bedrock" in captured
 
     def test_matching_provider_no_note(self, capsys):
-        with patch("llm_utils._call_bedrock", return_value="ok"):
+        with patch("audio_transcriber.llm_utils._call_bedrock", return_value="ok"):
             call_llm("sys", "msg",
                      "us.anthropic.claude-sonnet-4-6",
                      region="us-west-2", provider="bedrock")
@@ -2101,7 +2099,7 @@ class TestCallLLMProviderMismatch:
         assert "overrides detected provider" not in captured
 
     def test_implicit_no_note(self, capsys):
-        with patch("llm_utils._call_bedrock", return_value="ok"):
+        with patch("audio_transcriber.llm_utils._call_bedrock", return_value="ok"):
             call_llm("sys", "msg",
                      "us.anthropic.claude-sonnet-4-6",
                      region="us-west-2")
