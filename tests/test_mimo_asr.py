@@ -826,6 +826,8 @@ class TestCliWiring:
             "model": "cli-model",
             "timeout": 45,
             "api_key": "secret",
+            "allow_reasoning_content": False,
+            "max_audio_bytes": 20 * 1024 * 1024,
         }
 
     def test_api_config_environment_then_defaults(self):
@@ -848,6 +850,22 @@ class TestCliWiring:
         )
         assert default_config["base_url"] == "https://api.xiaomimimo.com/v1"
         assert default_config["model"] == "mimo-v2.5-asr"
+
+    def test_api_config_compatibility_and_size_settings(self):
+        from audio_transcriber import transcribe as tf
+
+        config = tf.resolve_mimo_api_config(
+            None,
+            None,
+            120,
+            "MIMO_API_KEY",
+            environ={
+                "MIMO_API_ALLOW_REASONING_CONTENT": "true",
+                "MIMO_API_MAX_AUDIO_MB": "7.5",
+            },
+        )
+        assert config["allow_reasoning_content"] is True
+        assert config["max_audio_bytes"] == round(7.5 * 1024 * 1024)
 
     def test_markdown_asr_engine_labels(self):
         from audio_transcriber import transcribe as tf

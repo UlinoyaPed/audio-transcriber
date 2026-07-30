@@ -38,13 +38,22 @@ def test_wav_data_url(tmp_path):
     )
 
 
-def _recognizer(handler, *, api_key="top-secret", timeout=3):
+def _recognizer(
+    handler,
+    *,
+    api_key="top-secret",
+    timeout=3,
+    allow_reasoning_content=False,
+    max_audio_bytes=20 * 1024 * 1024,
+):
     client = httpx.Client(transport=httpx.MockTransport(handler))
     return MimoApiRecognizer(
         api_key=api_key,
         base_url="https://api.example.test/v1/",
         model="mimo-test",
         timeout=timeout,
+        allow_reasoning_content=allow_reasoning_content,
+        max_audio_bytes=max_audio_bytes,
         client=client,
     )
 
@@ -94,7 +103,41 @@ def test_empty_content_falls_back_to_reasoning_content(tmp_path):
             },
         )
 
-    assert _recognizer(handler).transcribe(str(wav), "<auto>") == "fallback text"
+    assert _recognizer(
+        handler, allow_reasoning_content=True
+    ).transcribe(str(wav), "<auto>") == "fallback text"
+
+
+def test_reasoning_content_is_rejected_by_default(tmp_path):
+    wav = tmp_path / "segment.wav"
+    wav.write_bytes(b"wav")
+
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "message": {
+                        "content": "",
+                        "reasoning_content": "not a transcript by default",
+                    }
+                }]
+            },
+        )
+
+    with pytest.raises(MimoApiError, match=r"message\.content$"):
+        _recognizer(handler).transcribe(str(wav), "<auto>")
+
+
+def test_wav_data_url_incremental_encoding_and_size_limit(tmp_path):
+    wav = tmp_path / "segment.wav"
+    payload = b"0123456789abcdef"
+    wav.write_bytes(payload)
+    assert wav_data_url(str(wav), read_chunk_size=5) == (
+        "data:audio/wav;base64," + base64.b64encode(payload).decode("ascii")
+    )
+    with pytest.raises(MimoApiError, match="too large"):
+        wav_data_url(str(wav), max_bytes=len(payload) - 1)
 
 
 @pytest.mark.parametrize(

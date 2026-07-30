@@ -420,15 +420,24 @@ MiMo 是小米推出的 8B 参数、基于 LLM 的 ASR 模型，只直接输出�
 
 相关文件：
 
+- `audio_transcriber/asr_engine.py`：统一的 `ASREngine`、`ASRResult` 与后端适配器；
 - `audio_transcriber/mimo_asr.py`：编排、重试和断点；
 - `audio_transcriber/mimo_api.py`：HTTP 客户端；
 - `scripts/setup_mimo.sh`：仅本地模式需要的安装脚本。
+
+本地和 API 适配器返回相同结果类型；VAD、重试、断点和 CAM++ 仍由编排层负责。
 
 `--mimo-backend local` 是兼容默认值，需要约 34 GB 本地安装数据和至少 20 GB 显存的 CUDA GPU。`--mimo-backend api` 不执行 CUDA、本地权重、MiMo 仓库和模型加载检查；VAD 与 CAM++ 仍根据 `--device` 在本地运行，并完整支持 CPU。
 
 API 模式每次把一个 WAV 分段编码为 Base64 Data URL，使用 `api-key` 请求头和 `input_audio` 消息格式发送到 `{base_url}/chat/completions`。`<chinese>`、`<english>`、`<auto>` 分别映射为 `zh`、`en` 和 `auto`。
 
 调用始终串行。API 客户端本身只发送一次请求，编排层仅对 HTTP 408、429、500、502、503、504、网络失败和超时进行有限重试，退避时间为 1、2、5、10 秒。HTTP 400、401、403、文件不存在、无效 JSON 和永久响应结构错误会立即失败。
+
+默认只有 `message.content` 会被视为转录文本；
+`--mimo-api-allow-reasoning-content` 用于显式启用旧兼容回退。增量 Base64
+编码避免额外保留完整原始音频副本，`--mimo-api-max-audio-mb`（默认 20 MB）
+会拒绝过大的 JSON 上传。当前协议仍有 Base64 膨胀，且不支持 multipart
+或对象存储 URL。
 
 API 配置优先级：
 
@@ -438,6 +447,8 @@ API 配置优先级：
 | 模型 | `--mimo-api-model` | `MIMO_API_MODEL` | `mimo-v2.5-asr` |
 | Key | `--mimo-api-key-env NAME` | `NAME` 对应的值 | `MIMO_API_KEY` |
 | 超时 | `--mimo-api-timeout` | — | 120 秒 |
+| 最大分段 WAV | `--mimo-api-max-audio-mb` | `MIMO_API_MAX_AUDIO_MB` | 20 MB |
+| reasoning 回退 | `--mimo-api-allow-reasoning-content` | `MIMO_API_ALLOW_REASONING_CONTENT` | 关闭 |
 
 API Key 只保存在内存中，并会从错误信息中脱敏，不会写入断点文件、原始转录、Markdown 或日志。
 

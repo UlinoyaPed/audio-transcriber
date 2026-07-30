@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import queue
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from .asr_engine import ASREngine, MimoApiEngine
 from .mimo_api import MimoApiRecognizer, MimoApiRetryableError
 from .mimo_asr import (
     _safe_error_text,
@@ -201,7 +203,7 @@ class StreamingMimoApiProcessor:
 
     def __init__(
         self,
-        recognizer: MimoApiRecognizer,
+        recognizer: ASREngine,
         vad_model: Any,
         *,
         audio_tag: str,
@@ -311,8 +313,14 @@ class StreamingMimoApiProcessor:
             )
             _write_pcm_wav(segment_path, segment_pcm, sample_rate=self.sample_rate)
             try:
+                def recognize(path: str) -> str:
+                    result = self.recognizer.transcribe(path, self.audio_tag)
+                    # Retain compatibility with third-party/fake recognizers
+                    # that predate the normalized ASREngine interface.
+                    return result.text if hasattr(result, "text") else str(result)
+
                 text = recognize_with_retry(
-                    lambda path: self.recognizer.transcribe(path, self.audio_tag),
+                    recognize,
                     str(segment_path),
                     max_attempts=len(self.backoffs) + 1,
                     backoffs=self.backoffs,
@@ -451,6 +459,30 @@ def _redact(value: Any, secrets: Sequence[str]) -> Any:
     return value
 
 
+class AppendOnlyJournal:
+    """Durable JSONL event journal for reconstructing a live session."""
+
+    def __init__(self, path: Path, *, secrets: Sequence[str] = ()) -> None:
+        self.path = Path(path)
+        self.secrets = tuple(secrets)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def append(self, event: str, **details: Any) -> None:
+        record = _redact(
+            {
+                "event": event,
+                "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                **details,
+            },
+            self.secrets,
+        )
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+        with self.path.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+
 def save_live_checkpoint(
     path: Path,
     *,
@@ -463,6 +495,10 @@ def save_live_checkpoint(
     completed_chunks: list[int],
     segments: list[dict],
     failed_at: Optional[dict] = None,
+    journal_path: Optional[Path] = None,
+    num_speakers: Optional[int] = None,
+    speaker_names: Optional[list[str]] = None,
+    output_paths: Optional[dict[str, str]] = None,
     secrets: Sequence[str] = (),
 ) -> None:
     """Atomically persist live progress using an explicit secret-free schema."""
@@ -479,6 +515,10 @@ def save_live_checkpoint(
         "completed_chunks": completed_chunks,
         "segments": segments,
         "failed_at": failed_at,
+        "journal_path": str(journal_path) if journal_path else None,
+        "num_speakers": num_speakers,
+        "speaker_names": speaker_names,
+        "output_paths": output_paths,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     safe_state = _redact(state, secrets)
@@ -499,6 +539,7 @@ def capture_microphone(
     block_ms: int = 100,
     queue_seconds: int = 10,
     sounddevice_module: Any = None,
+    on_chunk: Optional[Callable[[RecordedChunk], None]] = None,
 ) -> None:
     """Capture microphone PCM while keeping model/network work off callback."""
     if block_ms <= 0:
@@ -553,6 +594,8 @@ def capture_microphone(
                 except queue.Empty:
                     continue
                 for chunk in writer.write(pcm):
+                    if on_chunk is not None:
+                        on_chunk(chunk)
                     worker.submit(chunk)
     except KeyboardInterrupt:
         print("\nStopping recording; draining captured audio...", flush=True)
@@ -565,6 +608,8 @@ def capture_microphone(
         except queue.Empty:
             break
         for chunk in writer.write(pcm):
+            if on_chunk is not None:
+                on_chunk(chunk)
             worker.submit(chunk)
 
 
@@ -600,6 +645,28 @@ def finalize_live_output(
         preset["spk"],
         device,
     )
+    return write_diarized_live_output(
+        recording_path,
+        assigned,
+        raw_json_path=raw_json_path,
+        markdown_path=markdown_path,
+        speaker_names=speaker_names,
+        model=model,
+        title=title,
+    )
+
+
+def write_diarized_live_output(
+    recording_path: Path,
+    segments: list[dict],
+    *,
+    raw_json_path: Path,
+    markdown_path: Path,
+    speaker_names: Optional[list[str]],
+    model: str,
+    title: str,
+) -> list[dict]:
+    """Normalize an already-diarized transcript and save both output formats."""
     diarized = [
         {
             "speaker": int(segment["speaker"]),
@@ -607,7 +674,7 @@ def finalize_live_output(
             "end_ms": int(segment["end_ms"]),
             "text": str(segment["text"]),
         }
-        for segment in assigned
+        for segment in segments
     ]
     raw_json_path.write_text(
         json.dumps(diarized, ensure_ascii=False, indent=2),
@@ -638,6 +705,109 @@ def finalize_live_output(
     )
     markdown_path.write_text(markdown, encoding="utf-8")
     return diarized
+
+
+def recover_live_checkpoint(
+    checkpoint_path: Path,
+    *,
+    api_key: str,
+    device: str,
+    title: str,
+    api_timeout: float,
+    allow_reasoning_content: bool,
+    max_audio_bytes: int,
+    transcribe_fn: Optional[Callable[..., list]] = None,
+) -> tuple[Path, Path]:
+    """Safely rebuild final output from the crash-readable master WAV.
+
+    Recovery deliberately re-runs VAD/ASR over the complete recording. Reusing
+    an arbitrary live chunk boundary could lose the processor's carried VAD
+    state and produce a mixed transcript.
+    """
+    try:
+        state = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise LiveTranscriptionError(
+            f"Cannot read live checkpoint {checkpoint_path}: {exc}"
+        ) from exc
+    if not isinstance(state, dict) or state.get("backend") != "api":
+        raise LiveTranscriptionError(
+            "Live recovery requires an API-backend checkpoint"
+        )
+    required = ("recording_path", "model", "base_url", "audio_tag")
+    missing = [field for field in required if not state.get(field)]
+    if missing:
+        raise LiveTranscriptionError(
+            "Live checkpoint is missing required fields: " + ", ".join(missing)
+        )
+    recording_path = Path(state["recording_path"])
+    if not recording_path.is_file():
+        raise LiveTranscriptionError(
+            f"Recorded WAV referenced by checkpoint does not exist: "
+            f"{recording_path}"
+        )
+    output_paths = state.get("output_paths") or {}
+    raw_json_path = Path(
+        output_paths.get(
+            "raw_json",
+            recording_path.with_name(
+                f"{recording_path.stem}_raw_transcript.json"
+            ),
+        )
+    )
+    markdown_path = Path(
+        output_paths.get(
+            "markdown",
+            recording_path.with_name(f"{recording_path.stem}-transcript.md"),
+        )
+    )
+    if transcribe_fn is None:
+        from .mimo_asr import transcribe_with_mimo
+
+        transcribe_fn = transcribe_with_mimo
+    diarized = transcribe_fn(
+        str(recording_path),
+        num_speakers=state.get("num_speakers"),
+        audio_tag=state["audio_tag"],
+        device=device,
+        backend="api",
+        api_key=api_key,
+        api_base_url=state["base_url"],
+        api_model=state["model"],
+        api_timeout=api_timeout,
+        api_allow_reasoning_content=allow_reasoning_content,
+        api_max_audio_bytes=max_audio_bytes,
+    )
+    write_diarized_live_output(
+        recording_path,
+        diarized,
+        raw_json_path=raw_json_path,
+        markdown_path=markdown_path,
+        speaker_names=state.get("speaker_names"),
+        model=state["model"],
+        title=title,
+    )
+    state["status"] = "complete"
+    state["failed_at"] = None
+    state["segments"] = diarized
+    state["updated_at"] = datetime.now().astimezone().isoformat(
+        timespec="seconds"
+    )
+    safe_state = _redact(state, (api_key,))
+    temp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+    temp_path.write_text(
+        json.dumps(safe_state, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(checkpoint_path)
+    journal_path = state.get("journal_path")
+    if journal_path:
+        AppendOnlyJournal(Path(journal_path), secrets=(api_key,)).append(
+            "session_recovered",
+            checkpoint_path=str(checkpoint_path),
+            segment_count=len(diarized),
+        )
+    return raw_json_path, markdown_path
 
 
 def list_input_devices(sounddevice_module: Any = None) -> None:
@@ -675,8 +845,8 @@ def _remove_completed_chunks(chunk_dir: Path) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Record a microphone and incrementally transcribe through the "
-            "Xiaomi MiMo HTTP API"
+            "Record chunked near-real-time microphone audio and transcribe "
+            "through the Xiaomi MiMo HTTP API"
         )
     )
     parser.add_argument("--name", default=None, help="Output stem")
@@ -731,6 +901,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mimo-api-model", default=None)
     parser.add_argument("--mimo-api-timeout", type=float, default=120)
     parser.add_argument("--mimo-api-key-env", default="MIMO_API_KEY")
+    parser.add_argument(
+        "--mimo-api-allow-reasoning-content",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Opt in to reasoning_content as a compatibility transcript field",
+    )
+    parser.add_argument("--mimo-api-max-audio-mb", type=float, default=None)
+    parser.add_argument(
+        "--recover-checkpoint",
+        type=Path,
+        default=None,
+        help="Rebuild output from a preserved *_live_partial.json and WAV; "
+             "does not access the microphone",
+    )
     parser.add_argument("--title", default="Live Transcript")
     parser.add_argument(
         "--keep-chunks",
@@ -765,12 +949,40 @@ def run(argv: Optional[list[str]] = None) -> int:
         args.mimo_api_model,
         args.mimo_api_timeout,
         args.mimo_api_key_env,
+        args.mimo_api_allow_reasoning_content,
+        args.mimo_api_max_audio_mb,
     )
     if not api["api_key"]:
         parser.error(
             f"MiMo API key is not set in environment variable "
             f"{args.mimo_api_key_env}"
         )
+
+    if args.recover_checkpoint is not None:
+        if args.device is None:
+            try:
+                import torch
+
+                args.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                args.device = "cpu"
+        try:
+            raw_path, markdown_path = recover_live_checkpoint(
+                args.recover_checkpoint.expanduser(),
+                api_key=api["api_key"],
+                device=args.device,
+                title=args.title,
+                api_timeout=api["timeout"],
+                allow_reasoning_content=api["allow_reasoning_content"],
+                max_audio_bytes=api["max_audio_bytes"],
+            )
+        except Exception as exc:
+            safe_error = _safe_error_text(exc, (api["api_key"],))
+            print(f"Error: live recovery failed: {safe_error}", file=sys.stderr)
+            return 1
+        print(f"Recovered raw transcript: {raw_path}")
+        print(f"Recovered Markdown: {markdown_path}")
+        return 0
 
     output_dir = Path(args.output_dir).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -781,8 +993,15 @@ def run(argv: Optional[list[str]] = None) -> int:
     raw_json_path = output_dir / f"{name}_raw_transcript.json"
     markdown_path = output_dir / f"{name}-transcript.md"
     checkpoint_path = output_dir / f"{name}_live_partial.json"
+    journal_path = output_dir / f"{name}_live_journal.jsonl"
     chunk_dir = output_dir / f"{name}_live_chunks"
-    targets = (recording_path, raw_json_path, markdown_path, checkpoint_path)
+    targets = (
+        recording_path,
+        raw_json_path,
+        markdown_path,
+        checkpoint_path,
+        journal_path,
+    )
     existing = [path for path in targets if path.exists()]
     if chunk_dir.exists() and any(chunk_dir.iterdir()):
         existing.append(chunk_dir)
@@ -833,9 +1052,11 @@ def run(argv: Optional[list[str]] = None) -> int:
             base_url=api["base_url"],
             model=api["model"],
             timeout=api["timeout"],
+            allow_reasoning_content=api["allow_reasoning_content"],
+            max_audio_bytes=api["max_audio_bytes"],
         )
         processor = StreamingMimoApiProcessor(
-            recognizer,
+            MimoApiEngine(recognizer),
             vad_model,
             audio_tag=args.mimo_audio_tag,
             api_key=api["api_key"],
@@ -845,6 +1066,21 @@ def run(argv: Optional[list[str]] = None) -> int:
     except Exception as exc:
         print(f"Error: failed to initialize live transcription: {exc}", file=sys.stderr)
         return 1
+
+    journal = AppendOnlyJournal(journal_path, secrets=(api["api_key"],))
+    output_paths = {
+        "raw_json": str(raw_json_path),
+        "markdown": str(markdown_path),
+    }
+    journal.append(
+        "session_started",
+        recording_path=str(recording_path),
+        checkpoint_path=str(checkpoint_path),
+        model=api["model"],
+        base_url=api["base_url"],
+        audio_tag=args.mimo_audio_tag,
+        chunk_seconds=args.chunk_seconds,
+    )
 
     def checkpoint_progress(
         segments: list[dict],
@@ -873,7 +1109,17 @@ def run(argv: Optional[list[str]] = None) -> int:
             completed_chunks=completed,
             segments=segments,
             failed_at=failed_at,
+            journal_path=journal_path,
+            num_speakers=num_speakers,
+            speaker_names=speaker_names,
+            output_paths=output_paths,
             secrets=(api["api_key"],),
+        )
+        journal.append(
+            "progress" if error is None else "recognition_failed",
+            completed_chunks=completed,
+            segment_count=len(segments),
+            failed_at=failed_at,
         )
 
     writer = PcmChunkWriter(
@@ -896,6 +1142,10 @@ def run(argv: Optional[list[str]] = None) -> int:
         chunk_seconds=args.chunk_seconds,
         completed_chunks=[],
         segments=[],
+        journal_path=journal_path,
+        num_speakers=num_speakers,
+        speaker_names=speaker_names,
+        output_paths=output_paths,
         secrets=(api["api_key"],),
     )
 
@@ -905,8 +1155,22 @@ def run(argv: Optional[list[str]] = None) -> int:
             worker,
             input_device=_parse_input_device(args.input_device),
             duration=args.duration,
+            on_chunk=lambda chunk: journal.append(
+                "chunk_committed",
+                index=chunk.index,
+                path=chunk.path,
+                start_ms=chunk.start_ms,
+                end_ms=chunk.end_ms,
+            ),
         )
         for chunk in writer.close():
+            journal.append(
+                "chunk_committed",
+                index=chunk.index,
+                path=chunk.path,
+                start_ms=chunk.start_ms,
+                end_ms=chunk.end_ms,
+            )
             worker.submit(chunk)
         segments = worker.finish()
         print("Recording complete. Running global CAM++ speaker clustering...")
@@ -931,13 +1195,24 @@ def run(argv: Optional[list[str]] = None) -> int:
             chunk_seconds=args.chunk_seconds,
             completed_chunks=worker.completed_chunks,
             segments=diarized,
+            journal_path=journal_path,
+            num_speakers=num_speakers,
+            speaker_names=speaker_names,
+            output_paths=output_paths,
             secrets=(api["api_key"],),
+        )
+        journal.append(
+            "session_complete",
+            segment_count=len(diarized),
+            raw_json_path=str(raw_json_path),
+            markdown_path=str(markdown_path),
         )
         if not args.keep_chunks:
             _remove_completed_chunks(chunk_dir)
         print(f"Raw transcript: {raw_json_path}")
         print(f"Markdown: {markdown_path}")
         print(f"Checkpoint: {checkpoint_path}")
+        print(f"Journal: {journal_path}")
         return 0
     except Exception as exc:
         writer.close()

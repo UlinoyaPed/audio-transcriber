@@ -22,6 +22,10 @@
   checkpoints.
 - Mocked API and orchestration tests covering request construction, retries,
   CPU/API operation, CAM++ handoff, metadata, and secret redaction.
+- A normalized `ASREngine`/`ASRResult` interface and adapters for the MiMo
+  local and API implementations.
+- Fsync'd append-only live-session journals and a microphone-free
+  `--recover-checkpoint` command.
 
 ### Changed
 
@@ -39,6 +43,11 @@
   reporting FunASR.
 - Added the `sounddevice` binding to the setup environment for microphone
   capture; PortAudio remains a required system library.
+- MiMo API parsing now accepts `message.content` by default; the legacy
+  `reasoning_content` fallback is explicit. Incremental Base64 encoding and a
+  configurable segment-size limit bound JSON upload risk.
+- Live-mode documentation now consistently calls the feature chunked
+  near-real-time transcription instead of implying streaming ASR.
 
 ### Removed
 

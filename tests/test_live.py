@@ -11,12 +11,14 @@ from pathlib import Path
 import pytest
 
 from audio_transcriber.live import (
+    AppendOnlyJournal,
     PcmChunkWriter,
     RecordedChunk,
     SerialTranscriptionWorker,
     StreamingMimoApiProcessor,
     finalize_live_output,
     list_input_devices,
+    recover_live_checkpoint,
     save_live_checkpoint,
 )
 from audio_transcriber.mimo_api import MimoApiError, MimoApiRetryableError
@@ -267,6 +269,96 @@ def test_checkpoint_schema_redacts_key(tmp_path):
     assert state["model"] == "mimo-v2.5-asr"
     assert state["base_url"] == "https://api.example/v1"
     assert state["segments"][0]["text"] == "text [REDACTED]"
+
+
+def test_append_only_journal_is_valid_jsonl_and_redacts_key(tmp_path):
+    key = "journal-secret"
+    journal_path = tmp_path / "session.jsonl"
+    journal = AppendOnlyJournal(journal_path, secrets=(key,))
+    journal.append("session_started", model="mimo", detail=f"contains {key}")
+    journal.append("chunk_committed", index=0)
+
+    raw = journal_path.read_text(encoding="utf-8")
+    records = [json.loads(line) for line in raw.splitlines()]
+    assert key not in raw
+    assert [record["event"] for record in records] == [
+        "session_started",
+        "chunk_committed",
+    ]
+    assert records[0]["detail"] == "contains [REDACTED]"
+
+
+def test_recover_checkpoint_reprocesses_master_wav_without_microphone(tmp_path):
+    recording = tmp_path / "meeting.wav"
+    _write_chunk(recording, _pcm(5))
+    checkpoint = tmp_path / "meeting_live_partial.json"
+    journal = tmp_path / "meeting_live_journal.jsonl"
+    raw_json = tmp_path / "result.json"
+    markdown = tmp_path / "result.md"
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "status": "failed",
+                "backend": "api",
+                "model": "mimo-v2.5-asr",
+                "base_url": "https://api.example/v1",
+                "audio_tag": "<auto>",
+                "recording_path": str(recording),
+                "num_speakers": 1,
+                "speaker_names": ["张三"],
+                "journal_path": str(journal),
+                "output_paths": {
+                    "raw_json": str(raw_json),
+                    "markdown": str(markdown),
+                },
+                "segments": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def transcribe(audio_path, **kwargs):
+        captured["audio_path"] = audio_path
+        captured.update(kwargs)
+        return [
+            {
+                "speaker": 0,
+                "start_ms": 1000,
+                "end_ms": 5000,
+                "text": "恢复文本",
+            }
+        ]
+
+    outputs = recover_live_checkpoint(
+        checkpoint,
+        api_key="recovery-secret",
+        device="cpu",
+        title="恢复会议",
+        api_timeout=30,
+        allow_reasoning_content=False,
+        max_audio_bytes=1024,
+        transcribe_fn=transcribe,
+    )
+
+    assert outputs == (raw_json, markdown)
+    assert captured["audio_path"] == str(recording)
+    assert captured["backend"] == "api"
+    assert captured["device"] == "cpu"
+    assert json.loads(raw_json.read_text(encoding="utf-8"))[0] == {
+        "speaker": 0,
+        "start_ms": 1000,
+        "end_ms": 5000,
+        "text": "恢复文本",
+    }
+    assert "MiMo API (mimo-v2.5-asr)" in markdown.read_text(encoding="utf-8")
+    state = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert state["status"] == "complete"
+    assert "recovery-secret" not in checkpoint.read_text(encoding="utf-8")
+    assert json.loads(journal.read_text(encoding="utf-8"))["event"] == (
+        "session_recovered"
+    )
 
 
 def test_finalize_live_output_runs_cam_and_writes_unified_outputs(tmp_path):

@@ -1241,6 +1241,8 @@ def resolve_mimo_api_config(
     model: Optional[str],
     timeout: float,
     key_env: str,
+    allow_reasoning_content: Optional[bool] = None,
+    max_audio_mb: Optional[float] = None,
     environ: Optional[dict] = None,
 ) -> dict:
     """Resolve CLI-over-environment MiMo API settings without logging secrets."""
@@ -1253,11 +1255,27 @@ def resolve_mimo_api_config(
     resolved_model = model or env.get("MIMO_API_MODEL") or "mimo-v2.5-asr"
     if not key_env:
         raise ValueError("--mimo-api-key-env must not be empty")
+    if allow_reasoning_content is None:
+        allow_reasoning_content = str(
+            env.get("MIMO_API_ALLOW_REASONING_CONTENT", "")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+    if max_audio_mb is None:
+        raw_max_audio_mb = env.get("MIMO_API_MAX_AUDIO_MB", "20")
+        try:
+            max_audio_mb = float(raw_max_audio_mb)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "MIMO_API_MAX_AUDIO_MB must be a positive number"
+            ) from None
+    if max_audio_mb <= 0:
+        raise ValueError("--mimo-api-max-audio-mb must be greater than zero")
     return {
         "base_url": resolved_base_url,
         "model": resolved_model,
         "timeout": timeout,
         "api_key": env.get(key_env),
+        "allow_reasoning_content": allow_reasoning_content,
+        "max_audio_bytes": round(max_audio_mb * 1024 * 1024),
     }
 
 
@@ -1372,6 +1390,21 @@ def main():
     p.add_argument("--mimo-api-key-env", default="MIMO_API_KEY",
                    help="Environment variable containing the MiMo API key "
                         "(default: MIMO_API_KEY)")
+    p.add_argument(
+        "--mimo-api-allow-reasoning-content",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Compatibility fallback for APIs that put transcript text in "
+             "reasoning_content (default: disabled; environment: "
+             "MIMO_API_ALLOW_REASONING_CONTENT)",
+    )
+    p.add_argument(
+        "--mimo-api-max-audio-mb",
+        type=float,
+        default=None,
+        help="Maximum WAV segment size in the API JSON request "
+             "(default: 20; environment: MIMO_API_MAX_AUDIO_MB)",
+    )
     p.add_argument("--mimo-batch", type=int, default=None,
                    help="Deprecated compatibility option; ignored. "
                         "MiMo segments are processed serially.")
@@ -1398,6 +1431,8 @@ def main():
             args.mimo_api_model,
             args.mimo_api_timeout,
             args.mimo_api_key_env,
+            args.mimo_api_allow_reasoning_content,
+            args.mimo_api_max_audio_mb,
         )
     except ValueError as exc:
         p.error(str(exc))
@@ -1535,6 +1570,8 @@ def main():
                 api_base_url=mimo_api["base_url"],
                 api_model=mimo_api["model"],
                 api_timeout=mimo_api["timeout"],
+                api_allow_reasoning_content=mimo_api["allow_reasoning_content"],
+                api_max_audio_bytes=mimo_api["max_audio_bytes"],
             )
         else:
             transcript = transcribe_with_funasr(

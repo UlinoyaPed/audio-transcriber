@@ -494,9 +494,11 @@ Phase 1b  MiMo recognition   → local asr_sft() OR /chat/completions
 Phase 1c  CAM++ + KMeans     → speaker ID per VAD segment
 ```
 
-Files: `audio_transcriber/mimo_asr.py` (orchestrator),
+Files: `audio_transcriber/asr_engine.py` (normalized `ASREngine` and
+`ASRResult`), `audio_transcriber/mimo_asr.py` (orchestrator),
 `audio_transcriber/mimo_api.py` (HTTP client), and `scripts/setup_mimo.sh`
-(local-only installer).
+(local-only installer). Local and API adapters return the same result type;
+VAD, retries, checkpoints, and CAM++ remain orchestration concerns.
 
 `--mimo-backend local` is the compatibility default. It requires the
 approximately 34 GB local installation and a CUDA GPU with at least 20 GB
@@ -510,6 +512,12 @@ message format. `<chinese>`, `<english>`, and `<auto>` map to `zh`, `en`, and
 orchestrator retries only HTTP 408/429/500/502/503/504, network failures, and
 timeouts with finite 1s, 2s, 5s, and 10s delays. HTTP 400/401/403, missing
 files, invalid JSON, and permanent response-shape errors fail immediately.
+Only `message.content` is treated as transcript text by default.
+`--mimo-api-allow-reasoning-content` enables the old fallback explicitly.
+Incremental Base64 encoding avoids retaining a second full raw-audio copy, and
+`--mimo-api-max-audio-mb` (20 MB by default) rejects oversized JSON uploads.
+The protocol still incurs Base64 expansion and does not provide multipart or
+object-storage URL submission.
 
 API configuration precedence is:
 
@@ -519,6 +527,8 @@ API configuration precedence is:
 | Model | `--mimo-api-model` | `MIMO_API_MODEL` | `mimo-v2.5-asr` |
 | Key | `--mimo-api-key-env NAME` | value of `NAME` | `MIMO_API_KEY` |
 | Timeout | `--mimo-api-timeout` | — | 120 seconds |
+| Maximum segment WAV | `--mimo-api-max-audio-mb` | `MIMO_API_MAX_AUDIO_MB` | 20 MB |
+| Reasoning fallback | `--mimo-api-allow-reasoning-content` | `MIMO_API_ALLOW_REASONING_CONTENT` | disabled |
 
 The API key is held only in memory and is redacted from errors. It is not
 stored in the checkpoint, raw transcript, Markdown, or logs.

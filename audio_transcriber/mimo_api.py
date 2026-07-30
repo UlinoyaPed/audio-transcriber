@@ -9,6 +9,7 @@ unit test and cannot accidentally retry forever.
 from __future__ import annotations
 
 import base64
+import io
 from pathlib import Path
 from typing import Any, Optional
 
@@ -21,6 +22,7 @@ _AUDIO_TAG_LANGUAGES = {
     "<auto>": "auto",
 }
 _RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+DEFAULT_MAX_AUDIO_BYTES = 20 * 1024 * 1024
 
 
 class MimoApiError(RuntimeError):
@@ -42,13 +44,46 @@ def audio_tag_to_language(audio_tag: str) -> str:
         ) from exc
 
 
-def wav_data_url(audio_path: str) -> str:
-    """Return a WAV file as a Base64 data URL."""
+def wav_data_url(
+    audio_path: str,
+    *,
+    max_bytes: int = DEFAULT_MAX_AUDIO_BYTES,
+    read_chunk_size: int = 1024 * 1024,
+) -> str:
+    """Return a WAV file as a Base64 data URL with bounded raw-file reads.
+
+    The MiMo chat-completions contract requires a JSON data URL, so the final
+    encoded string must still exist in memory. Incremental encoding avoids a
+    second, full-size raw audio copy and the size limit prevents accidentally
+    creating an unbounded request.
+    """
     path = Path(audio_path)
     if not path.is_file():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:audio/wav;base64,{encoded}"
+    if max_bytes <= 0:
+        raise ValueError("MiMo API maximum audio size must be greater than zero")
+    size = path.stat().st_size
+    if size > max_bytes:
+        raise MimoApiError(
+            f"Audio file is too large for MiMo API JSON upload: "
+            f"{size} bytes exceeds the configured {max_bytes}-byte limit"
+        )
+    if read_chunk_size <= 0:
+        raise ValueError("read_chunk_size must be greater than zero")
+
+    output = io.StringIO()
+    output.write("data:audio/wav;base64,")
+    remainder = b""
+    with path.open("rb") as audio:
+        while chunk := audio.read(read_chunk_size):
+            data = remainder + chunk
+            complete = len(data) - (len(data) % 3)
+            if complete:
+                output.write(base64.b64encode(data[:complete]).decode("ascii"))
+            remainder = data[complete:]
+    if remainder:
+        output.write(base64.b64encode(remainder).decode("ascii"))
+    return output.getvalue()
 
 
 class MimoApiRecognizer:
@@ -61,21 +96,27 @@ class MimoApiRecognizer:
         model: str,
         timeout: float,
         *,
+        allow_reasoning_content: bool = False,
+        max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES,
         client: Optional[httpx.Client] = None,
     ) -> None:
         if not api_key:
             raise ValueError("MiMo API key is empty")
         if timeout <= 0:
             raise ValueError("MiMo API timeout must be greater than zero")
+        if max_audio_bytes <= 0:
+            raise ValueError("MiMo API maximum audio size must be greater than zero")
         self._api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = float(timeout)
+        self.allow_reasoning_content = allow_reasoning_content
+        self.max_audio_bytes = max_audio_bytes
         self._client = client
 
     def transcribe(self, audio_path: str, audio_tag: str) -> str:
         """Submit one WAV segment and return stripped transcript text."""
-        data_url = wav_data_url(audio_path)
+        data_url = wav_data_url(audio_path, max_bytes=self.max_audio_bytes)
         payload = {
             "model": self.model,
             "messages": [
@@ -142,11 +183,19 @@ class MimoApiRecognizer:
             )
 
         message = first["message"]
-        for field in ("content", "reasoning_content"):
-            value = message.get(field)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if self.allow_reasoning_content:
+            reasoning = message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                return reasoning.strip()
+        suffix = (
+            " or message.reasoning_content"
+            if self.allow_reasoning_content
+            else ""
+        )
         raise MimoApiError(
             "MiMo API response contains no transcription text in "
-            "message.content or message.reasoning_content"
+            f"message.content{suffix}"
         )

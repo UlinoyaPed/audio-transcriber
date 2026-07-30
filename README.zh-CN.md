@@ -76,7 +76,7 @@ audio-transcriber meeting.wav \
 
 默认输出为 `<文件名>_raw_transcript.json` 和 `<文件名>-transcript.md`。可通过 `--json-out` 和 `--output` 修改路径。
 
-## 实时录音与转录
+## 分块式近实时录音与转录
 
 先列出麦克风设备，再开始录制：
 
@@ -96,7 +96,17 @@ audio-transcriber-live \
 
 按 `Ctrl+C` 停止，也可以用 `--duration 1800` 设定录制时长。每个稳定的 VAD 语音段识别完成后，终端会立即显示文本。录音数据会先写入 `weekly-meeting.wav`，随后由单一工作线程调用 API，因此网络延迟不会阻塞麦克风回调。触及定时分块边界的语音会被保留到下一窗口，降低断词概率。
 
-实时预览暂不显示说话人姓名。停止录制后，程序会针对完整 WAV 统一运行一次 CAM++，再将稳定的说话人编号写入 `weekly-meeting_raw_transcript.json` 和 `weekly-meeting-transcript.md`。进度保存在 `weekly-meeting_live_partial.json` 中；API Key 会从断点文件和输出中脱敏。成功完成后，中间 WAV 分块会自动删除，使用 `--keep-chunks` 可保留。
+实时预览暂不显示说话人姓名。停止录制后，程序会针对完整 WAV 统一运行一次 CAM++，再将稳定的说话人编号写入 `weekly-meeting_raw_transcript.json` 和 `weekly-meeting-transcript.md`。进度保存在 `weekly-meeting_live_partial.json`，持久事件追加到 `weekly-meeting_live_journal.jsonl`；API Key 会从这两类文件、日志和输出中脱敏。
+
+失败后无需访问麦克风即可恢复：
+
+```bash
+audio-transcriber-live \
+  --recover-checkpoint weekly-meeting_live_partial.json \
+  --device cpu
+```
+
+恢复会重新处理可在崩溃后读取的完整主 WAV，以保证 VAD 边界正确。成功完成后，中间 WAV 分块会自动删除，使用 `--keep-chunks` 可保留。
 
 该功能属于分块式近实时转录，正常延迟约为分块时长、VAD 耗时和 API 耗时之和。当前实时命令仅支持 MiMo HTTP API；本地 MiMo 和 FunASR 继续通过离线 `audio-transcriber` 命令使用。可靠性设计、恢复方法和限制详见[实时转录中文文档](docs/live-transcription.zh-CN.md)。
 
@@ -131,8 +141,12 @@ API 配置遵循“命令行优先于环境变量”的规则：
 | `--mimo-api-model` | `MIMO_API_MODEL` | `mimo-v2.5-asr` |
 | `--mimo-api-key-env NAME` | 读取 `NAME` | `MIMO_API_KEY` |
 | `--mimo-api-timeout` | — | `120` 秒 |
+| `--mimo-api-max-audio-mb` | `MIMO_API_MAX_AUDIO_MB` | `20` |
+| `--mimo-api-allow-reasoning-content` | `MIMO_API_ALLOW_REASONING_CONTENT` | 关闭 |
 
 客户端会按顺序向 `POST {base_url}/chat/completions` 发送 `input_audio` 请求。HTTP 408、429、5xx、网络连接失败和超时会触发有限次数的指数退避；HTTP 400 请求错误和 401/403 鉴权错误会立即失败。
+
+默认只接受 `message.content` 作为转录文本；只有显式启用兼容开关时才回退到 `reasoning_content`。WAV 会按块进行 Base64 编码，并受上传大小限制保护。协议要求的 Base64 仍会增加约三分之一传输体积。
 
 中断后必须使用相同的后端、模型、Base URL 和音频标签恢复：
 

@@ -1,4 +1,4 @@
-# Live recording and transcription
+# Live chunked transcription
 
 [English](live-transcription.md) | [简体中文](live-transcription.zh-CN.md)
 
@@ -38,9 +38,17 @@ The MiMo API configuration is identical to the offline command:
 | `--mimo-api-model` | `MIMO_API_MODEL` | `mimo-v2.5-asr` |
 | `--mimo-api-key-env NAME` | Reads `NAME` | `MIMO_API_KEY` |
 | `--mimo-api-timeout` | — | `120` seconds |
+| `--mimo-api-max-audio-mb` | `MIMO_API_MAX_AUDIO_MB` | `20` |
+| `--mimo-api-allow-reasoning-content` | `MIMO_API_ALLOW_REASONING_CONTENT` | disabled |
 
 CLI values override environment values. The key itself must stay in an
 environment variable.
+
+`message.content` is the only transcript field accepted by default.
+`reasoning_content` can contain model analysis, so its fallback must be
+enabled explicitly for compatibility. The required Base64 data URL is encoded
+from bounded file reads and rejected before sending when it exceeds the
+configured raw-WAV limit.
 
 ## Data flow
 
@@ -116,6 +124,7 @@ For `--name weekly-meeting`, the tool creates:
 | `weekly-meeting.wav` | Complete microphone recording |
 | `weekly-meeting_live_chunks/chunk_*.wav` | Durable work queue |
 | `weekly-meeting_live_partial.json` | Backend/config/progress checkpoint |
+| `weekly-meeting_live_journal.jsonl` | Fsync'd append-only session events |
 | `weekly-meeting_raw_transcript.json` | Final diarized segments |
 | `weekly-meeting-transcript.md` | Final readable transcript |
 
@@ -124,18 +133,18 @@ Chunk files are deleted only after successful finalization unless
 chunks, and checkpoint remain.
 
 The live checkpoint records the API backend, model, base URL, audio tag,
-completed chunk indices, segments, and failure location. It never records the
-API key. A failed live session can always be recovered from its master WAV
-with the offline pipeline:
+completed chunk indices, segments, and failure location. The JSONL journal
+adds one durable event at a time for session start, committed chunks,
+recognition progress, failures, and completion. Neither file records the API
+key.
+
+Use the dedicated recovery entry point; it does not initialize or access a
+microphone:
 
 ```bash
-audio-transcriber transcripts/weekly-meeting.wav \
-  --lang mimo \
-  --mimo-backend api \
-  --mimo-audio-tag '<auto>' \
-  --device cpu \
-  --num-speakers 4 \
-  --speakers '张三,李四,王五,赵六'
+audio-transcriber-live \
+  --recover-checkpoint transcripts/weekly-meeting_live_partial.json \
+  --device cpu
 ```
 
 That recovery intentionally re-runs recognition from the WAV. Replaying only
@@ -177,6 +186,6 @@ NVIDIA GPU are not needed for API mode; use `--device cpu` when appropriate.
   and FunASR remain offline commands.
 - One mono input device is recorded per process.
 - Speaker labels become available only during finalization.
-- There is no in-place live-checkpoint resume command. Recovery reprocesses the
-  preserved master WAV so carried VAD context cannot be lost.
+- Checkpoint recovery reprocesses the preserved master WAV, and therefore
+  consumes API quota again, so carried VAD context cannot be lost.
 - Final LLM cleanup is a separate offline step.

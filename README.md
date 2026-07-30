@@ -90,7 +90,7 @@ audio-transcriber meeting.wav \
 The default outputs are `<stem>_raw_transcript.json` and
 `<stem>-transcript.md`. Pass `--json-out` or `--output` to override them.
 
-## Live recording and transcription
+## Live chunked transcription
 
 List microphones, then start a session:
 
@@ -117,9 +117,20 @@ carried into the next window instead of being cut immediately.
 Live preview deliberately omits speaker names. When recording stops, CAM++
 runs once over the complete WAV and writes stable speaker IDs to
 `weekly-meeting_raw_transcript.json` and `weekly-meeting-transcript.md`.
-Progress is stored in `weekly-meeting_live_partial.json`; the API key is
-redacted from checkpoints and output. Intermediate chunk WAVs are removed
-after success unless `--keep-chunks` is set.
+Progress is stored in `weekly-meeting_live_partial.json`, while durable events
+are appended to `weekly-meeting_live_journal.jsonl`; the API key is redacted
+from both files, logs, and output. Recover a failed session without opening
+the microphone:
+
+```bash
+audio-transcriber-live \
+  --recover-checkpoint weekly-meeting_live_partial.json \
+  --device cpu
+```
+
+Recovery reprocesses the crash-readable master WAV to preserve VAD boundary
+correctness. Intermediate chunk WAVs are removed after success unless
+`--keep-chunks` is set.
 
 This is chunked near-real-time transcription, not a bidirectional streaming
 protocol. Its normal latency is the chunk interval plus VAD and API time. The
@@ -160,11 +171,19 @@ API configuration follows CLI-over-environment precedence:
 | `--mimo-api-model` | `MIMO_API_MODEL` | `mimo-v2.5-asr` |
 | `--mimo-api-key-env NAME` | Reads `NAME` | `MIMO_API_KEY` |
 | `--mimo-api-timeout` | — | `120` seconds |
+| `--mimo-api-max-audio-mb` | `MIMO_API_MAX_AUDIO_MB` | `20` |
+| `--mimo-api-allow-reasoning-content` | `MIMO_API_ALLOW_REASONING_CONTENT` | disabled |
 
 The client sends serial `input_audio` requests to
 `POST {base_url}/chat/completions`. Transient HTTP 408/429/5xx responses,
 connection failures, and timeouts use finite exponential backoff. A 400
 request error or 401/403 authentication error fails immediately.
+
+Only `message.content` is accepted as transcript text by default. The
+`reasoning_content` fallback is available solely as an explicit compatibility
+option. WAV files are incrementally Base64-encoded for the required JSON data
+URL, and the size limit prevents unexpectedly large requests. Base64 still
+adds roughly one-third transport overhead.
 
 After an interrupted run, use the same backend, model, base URL, and audio tag:
 

@@ -24,7 +24,12 @@ import time
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-from .mimo_api import MimoApiRecognizer, MimoApiRetryableError
+from .asr_engine import ASREngine, MimoApiEngine, MimoLocalEngine
+from .mimo_api import (
+    DEFAULT_MAX_AUDIO_BYTES,
+    MimoApiRecognizer,
+    MimoApiRetryableError,
+)
 
 
 LOCAL_MODEL_ID = "XiaomiMiMo/MiMo-V2.5-ASR"
@@ -235,7 +240,10 @@ def transcribe_with_mimo(audio_path: str,
                          api_base_url: str = DEFAULT_API_BASE_URL,
                          api_model: str = DEFAULT_API_MODEL,
                          api_timeout: float = 120,
-                         api_recognizer: Optional[MimoApiRecognizer] = None) -> list:
+                         api_allow_reasoning_content: bool = False,
+                         api_max_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES,
+                         api_recognizer: Optional[MimoApiRecognizer] = None,
+                         api_engine: Optional[ASREngine] = None) -> list:
     """Phase 1 MiMo path: VAD -> per-segment MiMo ASR -> CAM++ speaker labels.
 
     Returns a sentence_info-shaped list of
@@ -260,7 +268,7 @@ def transcribe_with_mimo(audio_path: str,
     if backend == "local":
         require_cuda_and_vram(min_gb=20)
         require_mimo_installed(weights_path, repo_path)
-    elif api_recognizer is None:
+    elif api_recognizer is None and api_engine is None:
         if not api_key:
             raise RuntimeError(
                 "MiMo API key is not set. Export MIMO_API_KEY or pass "
@@ -271,6 +279,8 @@ def transcribe_with_mimo(audio_path: str,
             base_url=api_base_url,
             model=api_model,
             timeout=api_timeout,
+            allow_reasoning_content=api_allow_reasoning_content,
+            max_audio_bytes=api_max_audio_bytes,
         )
 
     # 2. Resolve state (resume or fresh VAD)
@@ -306,15 +316,14 @@ def transcribe_with_mimo(audio_path: str,
 
     # 3. Build a unified single-segment recognizer.
     mimo = None
+    engine: ASREngine
     if backend == "local":
         print(f"[Phase 1b] MiMo ASR (local, GPU)")
         print(f"  Loading MiMo from {weights_path}...")
         t_load = time.time()
         mimo = _load_mimo(weights_path)
         print(f"  Loaded in {time.time() - t_load:.1f}s")
-
-        def recognize_segment(path: str) -> str:
-            return mimo.asr_sft(path, audio_tag=audio_tag)
+        engine = MimoLocalEngine(mimo)
 
         retry_backoffs = tuple(backoffs or (0.5, 2.0, 5.0))
         max_attempts = 3
@@ -323,19 +332,23 @@ def transcribe_with_mimo(audio_path: str,
         secrets: Sequence[str] = ()
     else:
         print(f"[Phase 1b] MiMo ASR (HTTP API: {api_model})")
-        assert api_recognizer is not None
-
-        def recognize_segment(path: str) -> str:
-            text = api_recognizer.transcribe(path, audio_tag)
-            if api_key and api_key in text:
-                return text.replace(api_key, "[REDACTED]")
-            return text
+        if api_engine is not None:
+            engine = api_engine
+        else:
+            assert api_recognizer is not None
+            engine = MimoApiEngine(api_recognizer)
 
         retry_backoffs = tuple(backoffs or (1.0, 2.0, 5.0, 10.0))
         max_attempts = len(retry_backoffs) + 1
         retryable = lambda exc: isinstance(exc, MimoApiRetryableError)
         on_retry = None
         secrets = (api_key or "",)
+
+    def recognize_segment(path: str) -> str:
+        text = engine.transcribe(path, audio_tag).text
+        if api_key and api_key in text:
+            return text.replace(api_key, "[REDACTED]")
+        return text
 
     # 4. Per-segment loop with retry
     t0 = time.time()

@@ -1,4 +1,4 @@
-# 实时录音与转录
+# 分块式近实时录音与转录
 
 [English](live-transcription.md) | [简体中文](live-transcription.zh-CN.md)
 
@@ -33,8 +33,15 @@ MiMo API 配置与离线命令保持一致：
 | `--mimo-api-model` | `MIMO_API_MODEL` | `mimo-v2.5-asr` |
 | `--mimo-api-key-env NAME` | 读取 `NAME` | `MIMO_API_KEY` |
 | `--mimo-api-timeout` | — | `120` 秒 |
+| `--mimo-api-max-audio-mb` | `MIMO_API_MAX_AUDIO_MB` | `20` |
+| `--mimo-api-allow-reasoning-content` | `MIMO_API_ALLOW_REASONING_CONTENT` | 关闭 |
 
 命令行值优先于环境变量。API Key 必须保存在环境变量中。
+
+默认只接受 `message.content` 作为转录文本。由于
+`reasoning_content` 可能包含模型分析，只有显式启用兼容开关时才会回退。
+协议要求的 Base64 Data URL 会从有界文件读取中编码；原始 WAV 超过配置
+上限时会在发送前拒绝。
 
 ## 数据流
 
@@ -91,21 +98,20 @@ flowchart TD
 | `weekly-meeting.wav` | 完整麦克风录音 |
 | `weekly-meeting_live_chunks/chunk_*.wav` | 持久化工作队列 |
 | `weekly-meeting_live_partial.json` | 后端、配置和进度断点 |
+| `weekly-meeting_live_journal.jsonl` | 每次 fsync 的追加式会话事件 |
 | `weekly-meeting_raw_transcript.json` | 最终说话人分离结果 |
 | `weekly-meeting-transcript.md` | 最终可读转录稿 |
 
 只有成功完成最终处理后，分块文件才会被删除；使用 `--keep-chunks` 可始终保留。录音、API、VAD 或 CAM++ 阶段失败时，WAV、分块和断点文件都会保留。
 
-实时断点文件记录 API 后端、模型、Base URL、音频标签、已完成分块编号、识别分段和失败位置，不会记录 API Key。实时会话失败后，可以使用主 WAV 重新运行离线管线：
+实时断点文件记录 API 后端、模型、Base URL、音频标签、已完成分块编号、识别分段和失败位置。JSONL 日志会逐条持久记录会话开始、已落盘分块、识别进度、失败和完成事件。两者都不会记录 API Key。
+
+使用专用恢复入口即可恢复；该命令不会初始化或访问麦克风：
 
 ```bash
-audio-transcriber transcripts/weekly-meeting.wav \
-  --lang mimo \
-  --mimo-backend api \
-  --mimo-audio-tag '<auto>' \
-  --device cpu \
-  --num-speakers 4 \
-  --speakers '张三,李四,王五,赵六'
+audio-transcriber-live \
+  --recover-checkpoint transcripts/weekly-meeting_live_partial.json \
+  --device cpu
 ```
 
 恢复时会从 WAV 重新识别。只重放最后一个分块并不安全，因为一个 VAD 语音段可能跨越多个分块边界。
@@ -141,5 +147,5 @@ FSMN VAD 和最终 CAM++ 还依赖基础环境中的 FunASR、ModelScope、PyTor
 - 实时命令当前只支持小米 MiMo HTTP API；本地 MiMo 和 FunASR 仍通过离线命令使用。
 - 每个进程只能录制一个单声道输入设备。
 - 说话人标签要在最终处理阶段才会生成。
-- 暂无原地恢复实时断点的命令；恢复时重新处理已保存的主 WAV，确保不会丢失跨边界的 VAD 上下文。
+- 断点恢复会重新处理已保存的主 WAV，因此会再次消耗 API 配额，以确保不会丢失跨边界的 VAD 上下文。
 - 最终 LLM 清理需要单独执行离线步骤。
