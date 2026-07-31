@@ -470,4 +470,9 @@ API Key 只保存在内存中，并会从错误信息中脱敏，不会写入断
 
 本地分段失败时保留三次尝试，并在重试间执行 `gc.collect()` 和 `torch.cuda.empty_cache()`；API 使用前述有限重试规则。
 
-全部尝试失败后，`*_mimo_partial.json` 会记录后端、模型、Base URL、VAD 分段、已完成文本以及失败分段和时间范围。`--resume-mimo` 会在继续前校验音频 SHA-256、音频标签、后端、模型和 Base URL。旧版没有 `backend` 字段的本地断点按 `local` 处理。
+VAD 完成后及每个分段识别完成后，程序都会以原子替换和 fsync 更新
+`*_mimo_partial.json`，并一直保留到 CAM++ 成功。断点会记录后端、模型、
+Base URL、VAD 分段、已完成文本以及下一或失败分段和时间范围；`Ctrl+C`
+会先保存当前位置再继续抛出中断。`--resume-mimo` 会在继续前校验音频
+SHA-256、音频标签、后端、模型和 Base URL。旧版没有 `backend` 字段的本地
+断点按 `local` 处理。

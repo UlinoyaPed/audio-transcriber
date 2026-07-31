@@ -200,6 +200,11 @@ audio-transcriber meeting.m4a \
   --resume-mimo
 ```
 
+MiMo writes an fsync'd atomic partial after VAD and after every recognized
+segment. `Ctrl+C` preserves the next segment index before propagating the
+interrupt, while abrupt termination loses at most the currently executing
+segment. A completed ASR checkpoint is retained until CAM++ succeeds.
+
 The API key is read only from the selected environment variable. It is never
 written to logs, exceptions, checkpoints, raw transcript JSON, or Markdown.
 Audio segments are sent to the configured endpoint; local VAD and speaker

@@ -695,6 +695,88 @@ class TestTranscribeWithMimo:
         assert state["failed_at"]["start_ms"] == 1000
         assert state["failed_at"]["end_ms"] == 5000
 
+    def test_keyboard_interrupt_saves_completed_segments_and_resumes(
+        self, tmp_path
+    ):
+        audio = tmp_path / "meeting.wav"
+        audio.write_bytes(b"stable-audio")
+        first_recognizer = MagicMock()
+        first_recognizer.transcribe.side_effect = [
+            "第一段",
+            KeyboardInterrupt(),
+        ]
+
+        with patch.object(
+            mimo_asr,
+            "run_fsmn_vad",
+            return_value=[(0, 1000), (1000, 2000)],
+        ), patch.object(
+            mimo_asr,
+            "extract_segment",
+            side_effect=lambda _audio, start, _end, _tmp: str(
+                tmp_path / f"{start}.wav"
+            ),
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                mimo_asr.transcribe_with_mimo(
+                    str(audio),
+                    backend="api",
+                    api_recognizer=first_recognizer,
+                    backoffs=[],
+                    device="cpu",
+                )
+
+        partial = tmp_path / "meeting_mimo_partial.json"
+        state = json.loads(partial.read_text(encoding="utf-8"))
+        assert [item["text"] for item in state["completed"]] == ["第一段"]
+        assert state["failed_at"] == {
+            "idx": 1,
+            "start_ms": 1000,
+            "end_ms": 2000,
+            "error": "interrupted",
+        }
+
+        resumed_recognizer = MagicMock()
+        resumed_recognizer.transcribe.return_value = "第二段"
+        with patch.object(
+            mimo_asr,
+            "extract_segment",
+            return_value=str(tmp_path / "1000.wav"),
+        ), patch.object(
+            mimo_asr,
+            "assign_speakers_via_cam",
+            side_effect=lambda segments, *_args: [
+                {**segment, "speaker": 0} for segment in segments
+            ],
+        ):
+            result = mimo_asr.transcribe_with_mimo(
+                str(audio),
+                backend="api",
+                api_recognizer=resumed_recognizer,
+                resume=True,
+                backoffs=[],
+                device="cpu",
+            )
+        assert [item["text"] for item in result] == ["第一段", "第二段"]
+        assert resumed_recognizer.transcribe.call_count == 1
+        assert not partial.exists()
+
+    def test_partial_write_fsyncs_file_and_parent(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(mimo_asr.os, "fsync", lambda fd: calls.append(fd))
+        partial = tmp_path / "durable_mimo_partial.json"
+        mimo_asr.save_partial(
+            partial,
+            "sha256:test",
+            "<auto>",
+            "/weights",
+            [[0, 1000]],
+            [],
+            {"idx": 0, "start_ms": 0, "end_ms": 1000, "error": None},
+        )
+        assert partial.exists()
+        assert len(calls) >= 2
+
 
 class TestExtractSegmentValidation:
     """Nonexistent audio should fail with a clear message, not ffmpeg output."""

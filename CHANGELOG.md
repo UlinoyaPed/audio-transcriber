@@ -41,6 +41,9 @@
 - Offline artifacts now default beside their source audio, require
   `--overwrite`, and store source SHA-256 plus ASR parameters in a versioned
   raw JSON document. Unsafe cross-source `--skip-transcribe` reuse is rejected.
+- Offline MiMo checkpoints are now atomically fsync'd after VAD and every
+  completed segment. Keyboard interrupts preserve the next segment, and the
+  checkpoint remains until CAM++ finalization succeeds.
 - Expanded the package and repository introduction to cover live recording,
   speaker diarization, and MiMo local/API backends.
 - Runtime modules now live in `audio_transcriber/`; setup scripts live in

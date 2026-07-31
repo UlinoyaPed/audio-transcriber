@@ -557,8 +557,10 @@ for reported accuracy gains on dialects, code-switching, and lyrics.
 
 Local segment failures retain the existing three-attempt cleanup behavior
 using `gc.collect()` + `torch.cuda.empty_cache()`. API retry behavior is
-described above. If all attempts fail, a `*_mimo_partial.json` file captures
-the backend, model, base URL, VAD segments, completed transcriptions, and failed
-segment/time range. `--resume-mimo` verifies audio SHA256, audio tag, backend,
-model, and base URL before continuing. Legacy local checkpoints without a
-`backend` field are interpreted as `local`.
+described above. An atomic, fsync'd `*_mimo_partial.json` is written after VAD
+and every completed segment, and remains until CAM++ succeeds. It captures the
+backend, model, base URL, VAD segments, completed transcriptions, and next or
+failed segment/time range. `Ctrl+C` saves the active position before
+propagating. `--resume-mimo` verifies audio SHA256, audio tag, backend, model,
+and base URL before continuing. Legacy local checkpoints without a `backend`
+field are interpreted as `local`.

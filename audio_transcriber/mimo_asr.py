@@ -313,6 +313,28 @@ def transcribe_with_mimo(audio_path: str,
         print(f"  Detected {len(vad_segments)} segments")
         completed = {}
         start_idx = 0
+        next_segment = (
+            {
+                "idx": 0,
+                "start_ms": vad_segments[0][0],
+                "end_ms": vad_segments[0][1],
+                "error": None,
+            }
+            if vad_segments
+            else {"idx": 0, "start_ms": None, "end_ms": None, "error": None}
+        )
+        save_partial(
+            partial_path,
+            audio_hash,
+            audio_tag,
+            weights_path,
+            [list(v) for v in vad_segments],
+            [],
+            failed_at=next_segment,
+            backend=backend,
+            model=checkpoint_model,
+            base_url=checkpoint_base_url,
+        )
 
     # 3. Build a unified single-segment recognizer.
     mimo = None
@@ -352,12 +374,18 @@ def transcribe_with_mimo(audio_path: str,
 
     # 4. Per-segment loop with retry
     t0 = time.time()
+    current_idx = start_idx
+    current_start_ms = None
+    current_end_ms = None
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             for i in range(start_idx, len(vad_segments)):
                 if i in completed:
                     continue
                 s_ms, e_ms = vad_segments[i]
+                current_idx = i
+                current_start_ms = s_ms
+                current_end_ms = e_ms
                 chunk_wav = extract_segment(audio_path, s_ms, e_ms, tmpdir)
                 try:
                     text = recognize_with_retry(
@@ -394,8 +422,60 @@ def transcribe_with_mimo(audio_path: str,
                     ) from e
                 completed[i] = {"idx": i, "text": text,
                                 "start_ms": s_ms, "end_ms": e_ms}
+                next_idx = i + 1
+                next_start_ms = (
+                    vad_segments[next_idx][0]
+                    if next_idx < len(vad_segments)
+                    else None
+                )
+                next_end_ms = (
+                    vad_segments[next_idx][1]
+                    if next_idx < len(vad_segments)
+                    else None
+                )
+                save_partial(
+                    partial_path,
+                    audio_hash,
+                    audio_tag,
+                    weights_path,
+                    [list(v) for v in vad_segments],
+                    [completed[k] for k in sorted(completed)],
+                    failed_at={
+                        "idx": next_idx,
+                        "start_ms": next_start_ms,
+                        "end_ms": next_end_ms,
+                        "error": None,
+                    },
+                    backend=backend,
+                    model=checkpoint_model,
+                    base_url=checkpoint_base_url,
+                )
                 print(f"  [{i+1:3d}/{len(vad_segments)}] {_format_time(s_ms)} "
                       f"({e_ms - s_ms}ms) -> {text[:40]}")
+    except KeyboardInterrupt:
+        save_partial(
+            partial_path,
+            audio_hash,
+            audio_tag,
+            weights_path,
+            [list(v) for v in vad_segments],
+            [completed[k] for k in sorted(completed)],
+            failed_at={
+                "idx": current_idx,
+                "start_ms": current_start_ms,
+                "end_ms": current_end_ms,
+                "error": "interrupted",
+            },
+            backend=backend,
+            model=checkpoint_model,
+            base_url=checkpoint_base_url,
+        )
+        print(
+            f"\n  MiMo interrupted; durable progress saved to "
+            f"{partial_path.name}. Resume with --resume-mimo.",
+            file=sys.stderr,
+        )
+        raise
     finally:
         if backend == "local" and mimo is not None:
             _free_mimo(mimo)
@@ -425,6 +505,7 @@ def transcribe_with_mimo(audio_path: str,
     # 6. Clean up partial on success
     if partial_path.exists():
         partial_path.unlink()
+        _fsync_parent(partial_path)
 
     return segments
 
@@ -589,9 +670,28 @@ def save_partial(partial_path: Path, audio_hash: str, audio_tag: str,
         "failed_at": failed_at,
     }
     tmp = Path(str(partial_path) + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                   encoding="utf-8")
-    tmp.replace(partial_path)
+    try:
+        with tmp.open("w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, partial_path)
+        _fsync_parent(partial_path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+def _fsync_parent(path: Path) -> None:
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def load_partial(partial_path: Path, audio_hash: str, audio_tag: str, *,
