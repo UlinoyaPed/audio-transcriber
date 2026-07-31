@@ -167,6 +167,10 @@ The patch (`scripts/patch_clustering.py`) replaces this with:
 - Vectorized `p_pruning()` — replaces Python loop with numpy broadcasting
 
 **Always run the patch before processing meetings longer than ~1 hour.**
+The command succeeds only after re-reading the installed source and verifying
+both optimizations. Changed upstream targets, write failures, or verification
+failures return a nonzero status, and `setup_env.sh` stops instead of reporting
+a misleading successful setup.
 
 ## Speaker Role Verification
 

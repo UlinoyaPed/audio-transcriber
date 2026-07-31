@@ -75,6 +75,7 @@ PATCHED_PRUNING = """        # Vectorized: zero out the smallest n_elems values 
 def patch_file(path: Path) -> bool:
     content = path.read_text(encoding="utf-8")
     changed = False
+    valid = True
 
     if ORIGINAL_EIGSH in content and "eigsh" not in content:
         content = content.replace(ORIGINAL_EIGSH, PATCHED_EIGSH)
@@ -83,7 +84,8 @@ def patch_file(path: Path) -> bool:
     elif "eigsh" in content:
         print("  Already patched: sparse eigsh")
     else:
-        print("  WARNING: Could not locate eigsh patch target — FunASR may have been updated")
+        print("  ERROR: Could not locate eigsh patch target — FunASR may have been updated")
+        valid = False
 
     if "for i in range(A.shape[0]):" in content and "Vectorized" not in content:
         content = content.replace(ORIGINAL_PRUNING, PATCHED_PRUNING)
@@ -92,7 +94,11 @@ def patch_file(path: Path) -> bool:
     elif "Vectorized" in content:
         print("  Already patched: vectorized pruning")
     else:
-        print("  WARNING: Could not locate pruning patch target — FunASR may have been updated")
+        print("  ERROR: Could not locate pruning patch target — FunASR may have been updated")
+        valid = False
+
+    if not valid:
+        return False
 
     if changed:
         try:
@@ -108,10 +114,23 @@ def patch_file(path: Path) -> bool:
                 pyc.unlink()
                 print(f"  Cleared: {pyc.name}")
 
-    return changed
+    try:
+        verified = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"  Error: Could not verify patched file {path}: {exc}")
+        return False
+    if (
+        "from scipy.sparse.linalg import eigsh" not in verified
+        or "Vectorized: zero out the smallest n_elems values per row"
+        not in verified
+        or ORIGINAL_PRUNING in verified
+    ):
+        print("  Error: Post-patch verification failed")
+        return False
+    return True
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Patch FunASR's spectral clustering for sparse eigenvalue decomposition.")
     parser.add_argument("-y", "--yes", action="store_true",
@@ -121,7 +140,7 @@ def main():
     target = find_cluster_backend()
     if target is None:
         print("Error: funasr not installed or cluster_backend.py not found")
-        sys.exit(1)
+        return 1
 
     print(f"Found: {target}")
 
@@ -132,14 +151,17 @@ def main():
             resp = input("Proceed? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print("\nAborted (non-interactive or interrupted).")
-            sys.exit(2)
+            return 2
         if resp not in ("y", "yes"):
             print("Aborted.")
-            sys.exit(2)
+            return 2
 
-    patch_file(target)
+    if not patch_file(target):
+        print("Error: clustering patch was not applied and verified")
+        return 1
     print("Done.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

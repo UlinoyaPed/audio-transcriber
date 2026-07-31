@@ -149,6 +149,9 @@ FunASR 的 `SpectralCluster.get_spec_embs()` 使用 `scipy.linalg.eigh(L)` 计�
 - 使用 NumPy 广播向量化 `p_pruning()`，替换 Python 循环。
 
 处理约 1 小时以上的会议前应先应用补丁。`scripts/setup_env.sh` 会自动执行。
+补丁命令只有在重新读取安装源码并确认两项优化都存在时才返回成功；上游目标
+变化、写入失败或验证失败都会返回非零状态，`setup_env.sh` 也会停止，避免
+继续显示误导性的安装完成信息。
 
 ## 说话人角色校验
 

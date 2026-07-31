@@ -139,8 +139,9 @@ pip install -q -e "$PROJECT_ROOT" --no-deps
 # Patch clustering for long audio
 echo "Applying clustering optimization patch..."
 if ! audio-transcriber-patch-clustering --yes; then
-    echo "WARNING: Clustering patch failed. Long recordings (>1h) may be very slow."
+    echo "ERROR: Clustering patch failed. Refusing to report a complete setup."
     echo "  You can retry manually: audio-transcriber-patch-clustering --yes"
+    exit 1
 fi
 
 # Optional: install MiMo

@@ -47,6 +47,9 @@
 - Live checkpoints store movable session-relative paths and fsync atomic
   replacements. JSONL journal appends are locked and directory-fsync'd, so
   recovery works from any current working directory without torn lines.
+- The FunASR clustering patch now returns failure when upstream targets are
+  missing or post-write verification fails; environment setup stops instead
+  of reporting success without the long-audio optimization.
 - Expanded the package and repository introduction to cover live recording,
   speaker diarization, and MiMo local/API backends.
 - Runtime modules now live in `audio_transcriber/`; setup scripts live in
