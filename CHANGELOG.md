@@ -44,6 +44,9 @@
 - Offline MiMo checkpoints are now atomically fsync'd after VAD and every
   completed segment. Keyboard interrupts preserve the next segment, and the
   checkpoint remains until CAM++ finalization succeeds.
+- Live checkpoints store movable session-relative paths and fsync atomic
+  replacements. JSONL journal appends are locked and directory-fsync'd, so
+  recovery works from any current working directory without torn lines.
 - Expanded the package and repository introduction to cover live recording,
   speaker diarization, and MiMo local/API backends.
 - Runtime modules now live in `audio_transcriber/`; setup scripts live in

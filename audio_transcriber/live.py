@@ -466,6 +466,7 @@ class AppendOnlyJournal:
         self.path = Path(path)
         self.secrets = tuple(secrets)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
 
     def append(self, event: str, **details: Any) -> None:
         record = _redact(
@@ -477,10 +478,59 @@ class AppendOnlyJournal:
             self.secrets,
         )
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-        with self.path.open("a", encoding="utf-8") as stream:
-            stream.write(line + "\n")
+        with self._lock:
+            with self.path.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            _fsync_parent(self.path)
+
+
+def _fsync_parent(path: Path) -> None:
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _checkpoint_member(path: Path, checkpoint_path: Path) -> str:
+    resolved = path.expanduser().resolve()
+    try:
+        return str(resolved.relative_to(checkpoint_path.parent.resolve()))
+    except ValueError:
+        return str(resolved)
+
+
+def _resolve_checkpoint_member(value: str, checkpoint_path: Path) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return (checkpoint_path.parent / path).resolve()
+
+
+def _write_live_state(
+    path: Path,
+    state: dict,
+    *,
+    secrets: Sequence[str] = (),
+) -> None:
+    safe_state = _redact(state, secrets)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as stream:
+            json.dump(safe_state, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+        _fsync_parent(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def save_live_checkpoint(
@@ -502,6 +552,13 @@ def save_live_checkpoint(
     secrets: Sequence[str] = (),
 ) -> None:
     """Atomically persist live progress using an explicit secret-free schema."""
+    path = path.expanduser().resolve()
+    normalized_outputs = None
+    if output_paths:
+        normalized_outputs = {
+            key: _checkpoint_member(Path(value), path)
+            for key, value in output_paths.items()
+        }
     state = {
         "version": 1,
         "status": status,
@@ -509,25 +566,21 @@ def save_live_checkpoint(
         "model": model,
         "base_url": base_url,
         "audio_tag": audio_tag,
-        "recording_path": str(recording_path),
+        "recording_path": _checkpoint_member(recording_path, path),
         "sample_rate": SAMPLE_RATE,
         "chunk_seconds": chunk_seconds,
         "completed_chunks": completed_chunks,
         "segments": segments,
         "failed_at": failed_at,
-        "journal_path": str(journal_path) if journal_path else None,
+        "journal_path": (
+            _checkpoint_member(journal_path, path) if journal_path else None
+        ),
         "num_speakers": num_speakers,
         "speaker_names": speaker_names,
-        "output_paths": output_paths,
+        "output_paths": normalized_outputs,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
-    safe_state = _redact(state, secrets)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(
-        json.dumps(safe_state, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp_path.replace(path)
+    _write_live_state(path, state, secrets=secrets)
 
 
 def capture_microphone(
@@ -724,6 +777,7 @@ def recover_live_checkpoint(
     an arbitrary live chunk boundary could lose the processor's carried VAD
     state and produce a mixed transcript.
     """
+    checkpoint_path = checkpoint_path.expanduser().resolve()
     try:
         state = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError) as exc:
@@ -740,26 +794,30 @@ def recover_live_checkpoint(
         raise LiveTranscriptionError(
             "Live checkpoint is missing required fields: " + ", ".join(missing)
         )
-    recording_path = Path(state["recording_path"])
+    recording_path = _resolve_checkpoint_member(
+        state["recording_path"], checkpoint_path
+    )
     if not recording_path.is_file():
         raise LiveTranscriptionError(
             f"Recorded WAV referenced by checkpoint does not exist: "
             f"{recording_path}"
         )
     output_paths = state.get("output_paths") or {}
-    raw_json_path = Path(
-        output_paths.get(
+    raw_json_path = _resolve_checkpoint_member(
+        str(output_paths.get(
             "raw_json",
             recording_path.with_name(
                 f"{recording_path.stem}_raw_transcript.json"
             ),
-        )
+        )),
+        checkpoint_path,
     )
-    markdown_path = Path(
-        output_paths.get(
+    markdown_path = _resolve_checkpoint_member(
+        str(output_paths.get(
             "markdown",
             recording_path.with_name(f"{recording_path.stem}-transcript.md"),
-        )
+        )),
+        checkpoint_path,
     )
     if transcribe_fn is None:
         from .mimo_asr import transcribe_with_mimo
@@ -793,16 +851,13 @@ def recover_live_checkpoint(
     state["updated_at"] = datetime.now().astimezone().isoformat(
         timespec="seconds"
     )
-    safe_state = _redact(state, (api_key,))
-    temp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
-    temp_path.write_text(
-        json.dumps(safe_state, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temp_path.replace(checkpoint_path)
+    _write_live_state(checkpoint_path, state, secrets=(api_key,))
     journal_path = state.get("journal_path")
     if journal_path:
-        AppendOnlyJournal(Path(journal_path), secrets=(api_key,)).append(
+        AppendOnlyJournal(
+            _resolve_checkpoint_member(journal_path, checkpoint_path),
+            secrets=(api_key,),
+        ).append(
             "session_recovered",
             checkpoint_path=str(checkpoint_path),
             segment_count=len(diarized),
@@ -984,7 +1039,7 @@ def run(argv: Optional[list[str]] = None) -> int:
         print(f"Recovered Markdown: {markdown_path}")
         return 0
 
-    output_dir = Path(args.output_dir).expanduser()
+    output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     name = args.name or datetime.now().strftime("live-%Y%m%d-%H%M%S")
     if Path(name).name != name or name in ("", ".", ".."):

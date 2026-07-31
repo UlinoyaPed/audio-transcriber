@@ -136,7 +136,11 @@ The live checkpoint records the API backend, model, base URL, audio tag,
 completed chunk indices, segments, and failure location. The JSONL journal
 adds one durable event at a time for session start, committed chunks,
 recognition progress, failures, and completion. Neither file records the API
-key.
+key. Session files are stored relative to the checkpoint directory, so
+recovery is independent of the current working directory and the whole session
+directory can be moved together. Journal appends are serialized by a lock;
+both journal records and atomically replaced checkpoints fsync their files and
+parent directory.
 
 Use the dedicated recovery entry point; it does not initialize or access a
 microphone:

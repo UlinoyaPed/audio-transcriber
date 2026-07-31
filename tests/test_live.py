@@ -288,6 +288,117 @@ def test_append_only_journal_is_valid_jsonl_and_redacts_key(tmp_path):
     assert records[0]["detail"] == "contains [REDACTED]"
 
 
+def test_append_only_journal_serializes_concurrent_writers(tmp_path):
+    journal_path = tmp_path / "concurrent.jsonl"
+    journal = AppendOnlyJournal(journal_path)
+
+    def writer(worker):
+        for index in range(50):
+            journal.append("progress", worker=worker, index=index)
+
+    threads = [threading.Thread(target=writer, args=(worker,)) for worker in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    records = [
+        json.loads(line)
+        for line in journal_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 200
+    assert {
+        (record["worker"], record["index"]) for record in records
+    } == {(worker, index) for worker in range(4) for index in range(50)}
+
+
+def test_live_checkpoint_paths_are_relative_and_fsyncd(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "session" / "meeting_live_partial.json"
+    checkpoint.parent.mkdir()
+    calls = []
+    monkeypatch.setattr("audio_transcriber.live.os.fsync", lambda fd: calls.append(fd))
+    save_live_checkpoint(
+        checkpoint,
+        status="recording",
+        recording_path=checkpoint.parent / "meeting.wav",
+        model="mimo-v2.5-asr",
+        base_url="https://api.example/v1",
+        audio_tag="<auto>",
+        chunk_seconds=15,
+        completed_chunks=[],
+        segments=[],
+        journal_path=checkpoint.parent / "meeting_live_journal.jsonl",
+        output_paths={
+            "raw_json": str(checkpoint.parent / "meeting_raw_transcript.json"),
+            "markdown": str(checkpoint.parent / "meeting-transcript.md"),
+        },
+    )
+    state = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert state["recording_path"] == "meeting.wav"
+    assert state["journal_path"] == "meeting_live_journal.jsonl"
+    assert state["output_paths"]["raw_json"] == "meeting_raw_transcript.json"
+    assert len(calls) >= 2
+
+
+def test_recovery_resolves_relative_paths_from_checkpoint_directory(
+    tmp_path, monkeypatch
+):
+    session = tmp_path / "session"
+    elsewhere = tmp_path / "elsewhere"
+    session.mkdir()
+    elsewhere.mkdir()
+    recording = session / "meeting.wav"
+    _write_chunk(recording, _pcm(2))
+    checkpoint = session / "meeting_live_partial.json"
+    checkpoint.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "status": "failed",
+                "backend": "api",
+                "model": "mimo-v2.5-asr",
+                "base_url": "https://api.example/v1",
+                "audio_tag": "<auto>",
+                "recording_path": "meeting.wav",
+                "journal_path": "meeting_live_journal.jsonl",
+                "output_paths": {
+                    "raw_json": "meeting_raw_transcript.json",
+                    "markdown": "meeting-transcript.md",
+                },
+                "segments": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(elsewhere)
+
+    def transcribe(audio_path, **_kwargs):
+        assert audio_path == str(recording)
+        return [
+            {
+                "speaker": 0,
+                "start_ms": 0,
+                "end_ms": 1000,
+                "text": "跨目录恢复",
+            }
+        ]
+
+    outputs = recover_live_checkpoint(
+        checkpoint,
+        api_key="secret",
+        device="cpu",
+        title="恢复",
+        api_timeout=30,
+        allow_reasoning_content=False,
+        max_audio_bytes=1024,
+        transcribe_fn=transcribe,
+    )
+    assert outputs == (
+        session / "meeting_raw_transcript.json",
+        session / "meeting-transcript.md",
+    )
+
+
 def test_recover_checkpoint_reprocesses_master_wav_without_microphone(tmp_path):
     recording = tmp_path / "meeting.wav"
     _write_chunk(recording, _pcm(5))
