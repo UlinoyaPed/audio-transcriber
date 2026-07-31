@@ -46,6 +46,7 @@ from typing import Optional
 
 from .llm_utils import call_llm, detect_llm_provider
 from .speaker_mapping import speaker_permutation_error
+from .transcribe import load_raw_transcript_document
 
 
 # ──────────────────────────────────────────────
@@ -280,7 +281,12 @@ def _next_backup_path(path: Path) -> Path:
     return candidate
 
 
-def safely_write_transcript(path: Path, transcript: list) -> Optional[Path]:
+def safely_write_transcript(
+    path: Path,
+    transcript: list,
+    *,
+    document: Optional[dict] = None,
+) -> Optional[Path]:
     """Back up an existing JSON and atomically replace it with verified data."""
     path.parent.mkdir(parents=True, exist_ok=True)
     backup_path = None
@@ -291,18 +297,21 @@ def safely_write_transcript(path: Path, transcript: list) -> Optional[Path]:
             os.fsync(backup.fileno())
         _fsync_parent(backup_path)
 
+    value = transcript
+    if document is not None:
+        value = {**document, "segments": transcript}
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
     temp_path = Path(temp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(transcript, stream, ensure_ascii=False, indent=2)
+            json.dump(value, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
         parsed = json.loads(temp_path.read_text(encoding="utf-8"))
-        if parsed != transcript:
+        if parsed != value:
             raise RuntimeError("Corrected transcript verification failed")
         os.replace(temp_path, path)
         _fsync_parent(path)
@@ -349,8 +358,11 @@ def main():
     if not json_path.exists():
         print(f"Error: {json_path} not found")
         sys.exit(1)
-    with open(json_path, "r", encoding="utf-8") as f:
-        transcript = json.load(f)
+    try:
+        transcript, raw_document = load_raw_transcript_document(json_path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"Error: cannot load {json_path}: {exc}")
+        sys.exit(1)
     print(f"Loaded {len(transcript)} segments from {json_path}")
 
     # Parse speakers
@@ -472,7 +484,11 @@ def main():
     # Write output
     if needs_fix and args.fix:
         out_path = Path(args.output) if args.output else json_path
-        backup_path = safely_write_transcript(out_path, transcript)
+        backup_path = safely_write_transcript(
+            out_path,
+            transcript,
+            document=raw_document,
+        )
         print(f"\nCorrected transcript saved: {out_path}")
         if backup_path:
             print(f"Original backup: {backup_path}")

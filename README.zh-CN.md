@@ -74,7 +74,11 @@ audio-transcriber meeting.wav \
   --skip-llm
 ```
 
-默认输出为 `<文件名>_raw_transcript.json` 和 `<文件名>-transcript.md`。可通过 `--json-out` 和 `--output` 修改路径。
+默认输出为音频旁边的 `<文件名>_raw_transcript.json` 和
+`<文件名>-transcript.md`。原始 JSON 会保存源音频绝对路径、大小、纳秒级
+mtime、SHA-256、ASR 参数和标准化分段。只有显式传入 `--overwrite` 才会替换
+已有输出；`--skip-transcribe` 会拒绝源文件或处理参数不匹配的 raw artifact。
+可分别通过 `--json-out` 和 `--output` 指定其他路径。
 
 ## 分块式近实时录音与转录
 

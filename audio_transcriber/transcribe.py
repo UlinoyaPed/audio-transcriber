@@ -206,6 +206,21 @@ def _atomic_write_json(path: Path, value: dict) -> None:
             temp_path.unlink()
 
 
+def _atomic_write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+        _fsync_parent(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
 def _source_identity(path: Path) -> dict:
     stat = path.stat()
     return {
@@ -214,6 +229,59 @@ def _source_identity(path: Path) -> dict:
         "mtime_ns": stat.st_mtime_ns,
         "sha256": _sha256_file(path),
     }
+
+
+def build_raw_transcript_document(
+    audio_path: Path,
+    segments: list,
+    processing: dict,
+) -> dict:
+    """Build a source-bound Phase 1 artifact."""
+    return {
+        "schema_version": 2,
+        "source_audio": _source_identity(audio_path),
+        "processing": processing,
+        "segments": segments,
+    }
+
+
+def load_raw_transcript_document(
+    path: Path,
+    *,
+    audio_path: Optional[Path] = None,
+    expected_processing: Optional[dict] = None,
+    require_identity: bool = False,
+) -> tuple[list, Optional[dict]]:
+    """Load raw segments and optionally enforce source/parameter identity."""
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(value, list):
+        if require_identity:
+            raise RuntimeError(
+                f"{path} uses the legacy identity-free raw JSON format. "
+                "Re-run transcription to create a source-bound artifact."
+            )
+        return value, None
+    if not isinstance(value, dict) or not isinstance(value.get("segments"), list):
+        raise RuntimeError(f"{path} is not a recognized raw transcript document")
+    if value.get("schema_version") != 2:
+        raise RuntimeError(
+            f"{path} has unsupported raw transcript schema "
+            f"{value.get('schema_version')!r}"
+        )
+    if audio_path is not None:
+        current_source = _source_identity(audio_path)
+        if value.get("source_audio") != current_source:
+            raise RuntimeError(
+                f"{path} belongs to a different or modified source audio file"
+            )
+    if (
+        expected_processing is not None
+        and value.get("processing") != expected_processing
+    ):
+        raise RuntimeError(
+            f"{path} was created with different ASR processing parameters"
+        )
+    return value["segments"], value
 
 
 def _converted_audio_is_reusable(
@@ -1462,6 +1530,25 @@ def language_label(lang: str, preset: dict, *,
     return preset["label"]
 
 
+def resolve_output_paths(
+    audio_path: Path,
+    json_out: Optional[str] = None,
+    output: Optional[str] = None,
+) -> tuple[Path, Path]:
+    """Keep default artifacts beside their source audio."""
+    raw_json = (
+        Path(json_out).expanduser()
+        if json_out
+        else audio_path.parent / f"{audio_path.stem}_raw_transcript.json"
+    )
+    markdown = (
+        Path(output).expanduser()
+        if output
+        else audio_path.parent / f"{audio_path.stem}-transcript.md"
+    )
+    return raw_json, markdown
+
+
 def main():
     p = argparse.ArgumentParser(
         description="FunASR multi-speaker meeting transcription with speaker diarization",
@@ -1492,7 +1579,13 @@ def main():
                    help="Target format for audio preprocessing (default: flac). "
                         "flac is lossless and avoids truncation issues with opus on long audio.")
     p.add_argument("--output", default=None,
-                   help="Output file (default: <stem>-transcript.md)")
+                   help="Output file (default: beside audio as "
+                        "<stem>-transcript.md)")
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Explicitly replace existing raw JSON or Markdown output",
+    )
     p.add_argument("--model", default=None,
                    help="LLM model ID for cleanup (omit to skip LLM cleanup). "
                         "Auto-detects provider; pass --provider to override. "
@@ -1525,7 +1618,8 @@ def main():
                         "Skips speaker verification and LLM cleanup.")
     p.add_argument("--json-out", type=str, default=None, metavar="PATH",
                    help="Write Phase 1 raw transcript JSON to this path "
-                        "(overrides default <stem>_raw_transcript.json naming)")
+                        "(default: beside audio as "
+                        "<stem>_raw_transcript.json)")
     p.add_argument("--skip-transcribe", action="store_true",
                    help="Skip ASR, load from *_raw_transcript.json")
     p.add_argument("--skip-llm", action="store_true", help="Skip LLM cleanup")
@@ -1605,15 +1699,28 @@ def main():
         os.environ["MODELSCOPE_CACHE"] = args.model_cache_dir
         print(f"  Model cache: {args.model_cache_dir}")
 
-    audio_path = Path(args.audio_file)
-    raw_json = Path(args.json_out) if args.json_out else Path(f"{audio_path.stem}_raw_transcript.json")
-    output_path = Path(args.output) if args.output else Path(f"{audio_path.stem}-transcript.md")
+    audio_path = Path(args.audio_file).expanduser()
+    raw_json, output_path = resolve_output_paths(
+        audio_path,
+        args.json_out,
+        args.output,
+    )
 
     if args.json_out:
         parent = raw_json.parent or Path(".")
         if not parent.exists():
             print(f"Error: --json-out directory does not exist: {parent}")
             sys.exit(1)
+    collisions = []
+    if not args.skip_transcribe and raw_json.exists():
+        collisions.append(raw_json)
+    if not args.phase1_only and output_path.exists():
+        collisions.append(output_path)
+    if collisions and not args.overwrite:
+        p.error(
+            "output already exists; pass --overwrite to replace it: "
+            + ", ".join(str(path) for path in collisions)
+        )
 
     # Auto-detect device
     if args.device is None:
@@ -1651,6 +1758,24 @@ def main():
         if args.mimo_batch is not None:
             print("  Warning: --mimo-batch is deprecated and ignored; "
                   "MiMo segments are processed serially.")
+
+    raw_processing = {
+        "lang": args.lang,
+        "num_speakers": num_speakers,
+        "hotwords": hotwords,
+        "audio_format": args.audio_format,
+        "skip_preprocess": args.skip_preprocess,
+        "mimo_backend": args.mimo_backend if args.lang == "mimo" else None,
+        "mimo_audio_tag": args.mimo_audio_tag if args.lang == "mimo" else None,
+        "mimo_api_model": (
+            mimo_api["model"]
+            if args.lang == "mimo" and args.mimo_backend == "api"
+            else None
+        ),
+        "asr_model": preset["asr"],
+        "vad_model": preset.get("vad"),
+        "speaker_model": preset.get("spk"),
+    }
 
     # Load reference materials
     reference_text = None
@@ -1705,11 +1830,22 @@ def main():
 
     # ── Phase 1: Transcribe ──
     if args.skip_transcribe:
+        if not audio_path.is_file():
+            print(f"Error: source audio not found: {audio_path}")
+            sys.exit(1)
         if not raw_json.exists():
             print(f"Error: {raw_json} not found. Run full transcription first.")
             sys.exit(1)
-        with open(raw_json, "r", encoding="utf-8") as f:
-            transcript = json.load(f)
+        try:
+            transcript, _raw_document = load_raw_transcript_document(
+                raw_json,
+                audio_path=audio_path,
+                expected_processing=raw_processing,
+                require_identity=True,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"Error: cannot safely reuse {raw_json}: {exc}")
+            sys.exit(1)
         print(f"Loaded {len(transcript)} sentences from {raw_json}")
     else:
         if not audio_path.exists():
@@ -1741,8 +1877,14 @@ def main():
                 asr_audio, args.lang, num_speakers,
                 args.device, args.batch_size, hotwords,
             )
-        with open(raw_json, "w", encoding="utf-8") as f:
-            json.dump(transcript, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(
+            raw_json,
+            build_raw_transcript_document(
+                audio_path,
+                transcript,
+                raw_processing,
+            ),
+        )
         print(f"Raw transcript saved: {raw_json}")
 
     if not transcript:
@@ -1838,7 +1980,7 @@ def main():
         "speakers": [speaker_map.get(s, f"Speaker {s+1}") for s in actual_speakers],
         "speaker_genders": speaker_genders_by_name,
     })
-    output_path.write_text(md, encoding="utf-8")
+    _atomic_write_text(output_path, md)
     print(f"\nDone: {output_path} ({len(merged)} segments, "
           f"{len(actual_speakers)} speakers, {format_time_ms(duration_ms)})")
 

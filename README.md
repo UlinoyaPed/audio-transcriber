@@ -88,7 +88,11 @@ audio-transcriber meeting.wav \
 ```
 
 The default outputs are `<stem>_raw_transcript.json` and
-`<stem>-transcript.md`. Pass `--json-out` or `--output` to override them.
+`<stem>-transcript.md` beside the source audio. Raw JSON includes the source's
+absolute path, size, nanosecond mtime, SHA-256, ASR parameters, and normalized
+segments. Existing output is replaced only with `--overwrite`; a
+`--skip-transcribe` run refuses a raw artifact whose source or parameters no
+longer match. Pass `--json-out` or `--output` to choose explicit paths.
 
 ## Live chunked transcription
 

@@ -245,7 +245,10 @@ FunASR 接受常见音频格式。FLAC 在质量、大小和原生读取能力�
 
 处理管线支持从中断位置继续：
 
-- 阶段 1 输出：`<文件名>_raw_transcript.json`，使用 `--skip-transcribe` 跳过 ASR；
+- 阶段 1 输出：源音频旁边的 `<文件名>_raw_transcript.json`。其 schema 将分段
+  与源文件绝对路径、大小、mtime、SHA-256 和 ASR 参数绑定；
+  `--skip-transcribe` 会拒绝不匹配或旧版无身份列表，覆盖已有输出需显式
+  `--overwrite`；
 - 阶段 3 缓存：`<文件名>_llm_cache/chunk_NNN.json`。每份结果都绑定
   schema、模型、provider、完整 system prompt、格式化原始分块、说话人映射与
   上下文、参考材料、姓名和性别提示的 SHA-256 指纹。指纹不一致或 JSON

@@ -38,6 +38,9 @@
 - Multi-speaker LLM mappings must now be complete name permutations. The
   standalone verifier backs up existing JSON and uses fsync'd, parse-verified
   atomic replacement instead of destructive direct writes.
+- Offline artifacts now default beside their source audio, require
+  `--overwrite`, and store source SHA-256 plus ASR parameters in a versioned
+  raw JSON document. Unsafe cross-source `--skip-transcribe` reuse is rejected.
 - Expanded the package and repository introduction to cover live recording,
   speaker diarization, and MiMo local/API backends.
 - Runtime modules now live in `audio_transcriber/`; setup scripts live in

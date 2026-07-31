@@ -1274,6 +1274,7 @@ class TestPhase1Flags:
             make_segment(0, 0, 5000, "Hello"),
             make_segment(1, 5000, 10000, "World"),
         ]
+        (tmp_path / "test.wav").write_bytes(b"audio")
         with patch("sys.argv", [
                 "audio_transcriber.transcribe.py", str(tmp_path / "test.wav"),
                 "--json-out", str(custom_json),
@@ -1281,13 +1282,15 @@ class TestPhase1Flags:
             ]), \
              patch.object(tf, "transcribe_with_funasr", return_value=transcript), \
              patch.object(tf, "preprocess_audio", return_value=str(tmp_path / "test.wav")), \
-             patch.object(tf, "detect_montage_end", return_value=0), \
-             patch("pathlib.Path.exists", return_value=True):
+             patch.object(tf, "detect_montage_end", return_value=0):
             tf.main()
         assert custom_json.exists()
         saved = json.loads(custom_json.read_text())
-        assert len(saved) == 2
-        assert saved[0]["text"] == "Hello"
+        assert len(saved["segments"]) == 2
+        assert saved["segments"][0]["text"] == "Hello"
+        assert saved["source_audio"]["path"] == str(
+            (tmp_path / "test.wav").resolve()
+        )
 
     def test_without_new_flags_runs_all_phases(self, tmp_path):
         """Without new flags, all phases run (backward compatibility)."""
@@ -1297,9 +1300,7 @@ class TestPhase1Flags:
         ]
         output_md = tmp_path / "test-transcript.md"
         raw_json = tmp_path / "test_raw_transcript.json"
-
-        def fake_exists(self_path=None):
-            return True
+        (tmp_path / "test.wav").write_bytes(b"audio")
 
         with patch("sys.argv", [
                 "audio_transcriber.transcribe.py", str(tmp_path / "test.wav"),
@@ -1309,8 +1310,7 @@ class TestPhase1Flags:
             ]), \
              patch.object(tf, "transcribe_with_funasr", return_value=transcript), \
              patch.object(tf, "preprocess_audio", return_value=str(tmp_path / "test.wav")), \
-             patch.object(tf, "detect_montage_end", return_value=0), \
-             patch("pathlib.Path.exists", return_value=True):
+             patch.object(tf, "detect_montage_end", return_value=0):
             tf.main()
         assert output_md.exists()
         assert raw_json.exists()
@@ -1356,6 +1356,7 @@ class TestPhase1Flags:
             make_segment(1, 5000, 10000, "World"),
         ]
         custom_json = tmp_path / "phase1_out.json"
+        (tmp_path / "test.wav").write_bytes(b"audio")
         with patch("sys.argv", [
                 "audio_transcriber.transcribe.py", str(tmp_path / "test.wav"),
                 "--phase1-only",
@@ -1363,15 +1364,14 @@ class TestPhase1Flags:
                 "--device", "cpu",
             ]), \
              patch.object(tf, "transcribe_with_funasr", return_value=transcript), \
-             patch.object(tf, "preprocess_audio", return_value=str(tmp_path / "test.wav")), \
-             patch("pathlib.Path.exists", return_value=True):
+             patch.object(tf, "preprocess_audio", return_value=str(tmp_path / "test.wav")):
             with pytest.raises(SystemExit) as exc_info:
                 tf.main()
             assert exc_info.value.code == 0
         assert custom_json.exists()
         saved = json.loads(custom_json.read_text())
-        assert len(saved) == 2
-        assert saved[0]["text"] == "Hello"
+        assert len(saved["segments"]) == 2
+        assert saved["segments"][0]["text"] == "Hello"
         md_path = tmp_path / "test-transcript.md"
         assert not md_path.exists()
 

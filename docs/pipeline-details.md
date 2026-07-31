@@ -283,7 +283,10 @@ and splitting breaks speaker consistency across segments.
 ## Resume / Checkpoint Support
 
 The pipeline supports resuming interrupted runs:
-- **Phase 1 output**: `<stem>_raw_transcript.json` — use `--skip-transcribe` to skip ASR
+- **Phase 1 output**: `<stem>_raw_transcript.json` beside the source — its
+  schema binds segments to the source absolute path, size, mtime, SHA-256, and
+  ASR parameters. `--skip-transcribe` rejects mismatches and legacy
+  identity-free lists. Existing output requires `--overwrite`.
 - **Phase 3 cache**: `<stem>_llm_cache/chunk_NNN.json` — each result is bound
   to a SHA-256 fingerprint of the schema, model, provider, complete system
   prompt, formatted raw chunk, speaker mapping/context, reference material,
