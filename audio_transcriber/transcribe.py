@@ -1239,22 +1239,61 @@ def run_llm_cleanup(merged: list, speaker_map: dict, model_id: str, region: str,
     print(f"  LLM cleanup: {len(chunks)} chunks, model: {model_id} "
           f"(provider: {effective_provider})")
     for i, chunk in enumerate(chunks):
-        cache_file = cache_dir / f"chunk_{i:03d}.txt" if cache_dir else None
-
-        if cache_file and cache_file.exists():
-            cleaned.append(cache_file.read_text(encoding="utf-8"))
-            print(f"  chunk {i+1}/{len(chunks)} (cached)")
-            continue
-
         chunk_text = format_chunk(chunk, speaker_map)
         user_msg = (f"Clean the following meeting transcript segment "
                     f"({i+1}/{len(chunks)}):\n\n{chunk_text}")
+        cache_file = cache_dir / f"chunk_{i:03d}.json" if cache_dir else None
+        cache_inputs = {
+            "schema_version": 1,
+            "model": model_id,
+            "provider": effective_provider,
+            "system_prompt": system_prompt,
+            "formatted_chunk": chunk_text,
+            "chunk_index": i,
+            "chunk_count": len(chunks),
+            "speaker_map": speaker_map,
+            "speaker_context": speaker_context,
+            "reference_text": reference_text,
+            "speaker_names": speaker_names,
+            "gender_hints": speaker_genders,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                cache_inputs,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if cache_file and cache_file.exists():
+            try:
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                if (
+                    cached.get("schema_version") == 1
+                    and cached.get("fingerprint") == fingerprint
+                    and isinstance(cached.get("result"), str)
+                    and cached["result"].strip()
+                ):
+                    cleaned.append(cached["result"])
+                    print(f"  chunk {i+1}/{len(chunks)} (cached)")
+                    continue
+                print(f"  chunk {i+1}/{len(chunks)} cache invalidated")
+            except (OSError, ValueError, TypeError):
+                print(f"  chunk {i+1}/{len(chunks)} cache is invalid; rebuilding")
         try:
             result = call_llm(system_prompt, user_msg, model_id, region,
                               provider=effective_provider)
             cleaned.append(result)
             if cache_file:
-                cache_file.write_text(result, encoding="utf-8")
+                _atomic_write_json(
+                    cache_file,
+                    {
+                        "schema_version": 1,
+                        "fingerprint": fingerprint,
+                        "inputs": cache_inputs,
+                        "result": result,
+                    },
+                )
         except Exception as e:
             print(f"  ERROR: chunk {i+1} cleanup failed: {type(e).__name__}: {e}")
             print(f"         Falling back to raw text for this chunk.")
@@ -1268,8 +1307,8 @@ def run_llm_cleanup(merged: list, speaker_map: dict, model_id: str, region: str,
         pct = len(failed_chunks) / len(chunks) * 100
         print(f"\n  WARNING: {len(failed_chunks)}/{len(chunks)} chunks ({pct:.0f}%) "
               f"used raw text due to LLM failures: chunks {failed_chunks}")
-        print(f"  The output contains uncleaned segments. "
-              f"Delete the cached chunks and re-run to retry.")
+        print("  The output contains uncleaned segments; failed chunks "
+              "were not cached and will retry on the next run.")
 
     return cleaned
 
@@ -1778,7 +1817,7 @@ def main():
                                         speaker_genders_by_name,
                                         provider=args.provider)
         if args.clean_cache and cache_dir.exists():
-            for f in cache_dir.glob("chunk_*.txt"):
+            for f in cache_dir.glob("chunk_*"):
                 f.unlink()
             cache_dir.rmdir()
             print("  LLM cache cleaned")

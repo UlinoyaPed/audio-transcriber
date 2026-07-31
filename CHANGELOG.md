@@ -32,6 +32,9 @@
 - Audio preprocessing now binds converted files to source identity and
   conversion parameters through a SHA-256 manifest, validates 16 kHz mono
   output, and atomically replaces a distinct target for same-suffix inputs.
+- LLM chunk caches are now atomic JSON records bound to a complete semantic
+  input fingerprint; model, provider, prompt, transcript, speaker, reference,
+  or gender changes invalidate stale results automatically.
 - Expanded the package and repository introduction to cover live recording,
   speaker diarization, and MiMo local/API backends.
 - Runtime modules now live in `audio_transcriber/`; setup scripts live in

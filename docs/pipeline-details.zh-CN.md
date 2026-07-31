@@ -246,7 +246,10 @@ FunASR 接受常见音频格式。FLAC 在质量、大小和原生读取能力�
 处理管线支持从中断位置继续：
 
 - 阶段 1 输出：`<文件名>_raw_transcript.json`，使用 `--skip-transcribe` 跳过 ASR；
-- 阶段 3 缓存：`<文件名>_llm_cache/chunk_NNN.txt`，已清理分块会自动复用。缓存默认保留，完成后可用 `--clean-cache` 删除；
+- 阶段 3 缓存：`<文件名>_llm_cache/chunk_NNN.json`。每份结果都绑定
+  schema、模型、provider、完整 system prompt、格式化原始分块、说话人映射与
+  上下文、参考材料、姓名和性别提示的 SHA-256 指纹。指纹不一致或 JSON
+  截断时自动重建，写入采用 fsync 和原子替换；
 - MiMo 逐段断点：`<文件名>_mimo_partial.json`，使用完全相同的配置配合 `--resume-mimo` 恢复。
 
 ## 模型缓存

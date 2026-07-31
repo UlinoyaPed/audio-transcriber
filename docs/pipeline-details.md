@@ -282,8 +282,11 @@ and splitting breaks speaker consistency across segments.
 
 The pipeline supports resuming interrupted runs:
 - **Phase 1 output**: `<stem>_raw_transcript.json` — use `--skip-transcribe` to skip ASR
-- **Phase 3 cache**: `<stem>_llm_cache/chunk_NNN.txt` — already-cleaned chunks are reused
-  (kept by default; add `--clean-cache` to delete after completion)
+- **Phase 3 cache**: `<stem>_llm_cache/chunk_NNN.json` — each result is bound
+  to a SHA-256 fingerprint of the schema, model, provider, complete system
+  prompt, formatted raw chunk, speaker mapping/context, reference material,
+  names, and gender hints. A mismatch or truncated JSON is rebuilt
+  automatically. Cache writes use fsync and atomic replacement.
 
 ## Model Caching
 
