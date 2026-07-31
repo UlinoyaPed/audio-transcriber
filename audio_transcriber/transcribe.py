@@ -51,12 +51,14 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -168,6 +170,74 @@ def get_audio_duration(path: str) -> float:
         )
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _fsync_parent(path: Path) -> None:
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _atomic_write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temp_path.open("w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, path)
+        _fsync_parent(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _source_identity(path: Path) -> dict:
+    stat = path.stat()
+    return {
+        "path": str(path.resolve()),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sha256": _sha256_file(path),
+    }
+
+
+def _converted_audio_is_reusable(
+    output_path: Path,
+    manifest_path: Path,
+    *,
+    source: dict,
+    parameters: dict,
+) -> bool:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        output = manifest["output"]
+        return (
+            manifest.get("schema_version") == 1
+            and manifest.get("source") == source
+            and manifest.get("parameters") == parameters
+            and output_path.is_file()
+            and _is_16k_mono(str(output_path))
+            and output.get("size") == output_path.stat().st_size
+            and output.get("sha256") == _sha256_file(output_path)
+        )
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
 def preprocess_audio(input_path: str, output_format: str = "flac") -> str:
     """Convert audio to 16kHz mono for ASR. Validates output duration matches input.
 
@@ -179,45 +249,103 @@ def preprocess_audio(input_path: str, output_format: str = "flac") -> str:
                 f"'{tool}' not found. Install ffmpeg: "
                 f"sudo apt-get install ffmpeg (or use --skip-preprocess)")
     inp = Path(input_path)
+    if not inp.is_file():
+        raise RuntimeError(f"Audio file not found: {input_path}")
     # Skip conversion for formats FunASR reads natively at 16kHz
     if inp.suffix.lower() in (".wav", ".flac") and _is_16k_mono(input_path):
         print(f"  Audio already 16kHz mono: {input_path}")
         return input_path
 
-    out_path = inp.with_suffix(f".{output_format}")
-    if out_path.exists():
-        # Validate pre-existing file is not corrupt from a previous failed run
-        try:
-            get_audio_duration(str(out_path))
-            print(f"  Converted file exists: {out_path}")
-        except RuntimeError:
-            print(f"  WARNING: Existing {out_path} appears corrupt, re-converting...")
-            out_path.unlink()
-    if not out_path.exists():
-        print(f"  Converting {inp.name} → {out_path.name} ...")
-        codec_args = {
-            "opus": ["-c:a", "libopus", "-b:a", "32k"],
-            "flac": ["-sample_fmt", "s16"],
-            "wav": [],
-        }.get(output_format, [])
-        cmd = ["ffmpeg", "-i", input_path, "-ar", "16000", "-ac", "1",
-               *codec_args, str(out_path), "-y"]
+    if output_format not in {"opus", "flac", "wav"}:
+        raise ValueError(f"Unsupported audio output format: {output_format}")
+    ordinary_target = inp.with_suffix(f".{output_format}")
+    out_path = (
+        inp.with_name(f"{inp.stem}.transcoded.{output_format}")
+        if ordinary_target.resolve() == inp.resolve()
+        else ordinary_target
+    )
+    codec_args = {
+        "opus": ["-c:a", "libopus", "-b:a", "32k"],
+        "flac": ["-sample_fmt", "s16"],
+        "wav": [],
+    }[output_format]
+    parameters = {
+        "format": output_format,
+        "sample_rate": 16_000,
+        "channels": 1,
+        "codec_args": codec_args,
+    }
+    source = _source_identity(inp)
+    manifest_path = out_path.with_suffix(out_path.suffix + ".manifest.json")
+    if _converted_audio_is_reusable(
+        out_path,
+        manifest_path,
+        source=source,
+        parameters=parameters,
+    ):
+        print(f"  Reusing verified converted audio: {out_path}")
+        return str(out_path)
+
+    print(f"  Converting {inp.name} → {out_path.name} ...")
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f".{out_path.stem}.tmp-",
+        suffix=out_path.suffix,
+        dir=out_path.parent,
+    )
+    os.close(temp_fd)
+    temp_path = Path(temp_name)
+    try:
+        cmd = [
+            "ffmpeg", "-i", input_path, "-ar", "16000", "-ac", "1",
+            *codec_args, str(temp_path), "-y",
+        ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg conversion failed: {result.stderr[-500:]}")
+            raise RuntimeError(
+                f"ffmpeg conversion failed: {result.stderr[-500:]}"
+            )
+        if not _is_16k_mono(str(temp_path)):
+            raise RuntimeError(
+                "ffmpeg output validation failed: converted audio is not "
+                "16 kHz mono"
+            )
 
-    # Duration validation — catch silent truncation
-    in_dur = get_audio_duration(input_path)
-    out_dur = get_audio_duration(str(out_path))
-    diff = abs(in_dur - out_dur)
-    print(f"  Input duration: {in_dur:.1f}s, output duration: {out_dur:.1f}s (diff: {diff:.1f}s)")
-    if diff > 5.0:
-        raise RuntimeError(
-            f"Audio truncation detected! Input: {in_dur:.1f}s, output: {out_dur:.1f}s "
-            f"(lost {diff:.1f}s). Aborting to prevent incomplete transcription. "
-            f"Try converting to FLAC instead: ffmpeg -i {input_path} -ar 16000 -ac 1 "
-            f"-sample_fmt s16 {inp.with_suffix('.flac')}"
+        # Duration validation — catch silent truncation before replacement.
+        in_dur = get_audio_duration(input_path)
+        out_dur = get_audio_duration(str(temp_path))
+        diff = abs(in_dur - out_dur)
+        print(
+            f"  Input duration: {in_dur:.1f}s, output duration: "
+            f"{out_dur:.1f}s (diff: {diff:.1f}s)"
         )
+        if diff > 5.0:
+            raise RuntimeError(
+                f"Audio truncation detected! Input: {in_dur:.1f}s, "
+                f"output: {out_dur:.1f}s (lost {diff:.1f}s). Aborting "
+                "to prevent incomplete transcription."
+            )
+        with temp_path.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.replace(temp_path, out_path)
+        _fsync_parent(out_path)
+        _atomic_write_json(
+            manifest_path,
+            {
+                "schema_version": 1,
+                "source": source,
+                "parameters": parameters,
+                "output": {
+                    "path": str(out_path.resolve()),
+                    "size": out_path.stat().st_size,
+                    "sha256": _sha256_file(out_path),
+                    "duration_seconds": out_dur,
+                },
+            },
+        )
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
     return str(out_path)
 
 

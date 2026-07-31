@@ -244,6 +244,12 @@ audio-transcriber meeting.wav \
 
 FunASR works best with 16kHz mono audio. **FLAC is recommended** over WAV — lossless
 quality at ~50% the file size, and FunASR reads it natively via soundfile.
+Automatic preprocessing never overwrites a same-suffix source: a nonconforming
+`episode.flac` becomes `episode.transcoded.flac`. Reuse requires a sidecar
+manifest whose absolute source path, size, nanosecond mtime, SHA-256, output
+SHA-256, and conversion parameters all match. Conversion is validated as
+16 kHz mono with a matching duration before atomically replacing the cached
+target.
 
 ```bash
 # Recommended: FLAC (lossless, compact)

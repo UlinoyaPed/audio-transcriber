@@ -212,6 +212,10 @@ audio-transcriber meeting.wav \
 ## 音频预处理
 
 FunASR 最适合 16 kHz 单声道音频。建议优先使用 FLAC：它是无损格式，文件大小约为 WAV 的一半，FunASR 可通过 soundfile 原生读取。
+自动预处理不会覆盖同扩展名源文件：不符合要求的 `episode.flac` 会转换为
+`episode.transcoded.flac`。只有 sidecar manifest 中的源文件绝对路径、大小、
+纳秒级 mtime、SHA-256、输出 SHA-256 和转换参数全部一致时才会复用缓存。
+转换结果通过 16 kHz 单声道和时长校验后，才会原子替换缓存目标。
 
 ```bash
 # 推荐：无损且体积较小的 FLAC
