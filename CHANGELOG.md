@@ -33,6 +33,9 @@
   PyTorch/torchaudio pairs. Bundled ModelScope and Hugging Face models resolve
   immutable commits, and the only accepted pre-built FlashAttention wheel is
   SHA-256 verified; other combinations build the pinned source release.
+- Live finalization now writes the same source-bound, atomic raw transcript
+  schema as offline transcription, preserving safe `--skip-transcribe` LLM
+  cleanup and validating the API endpoint as part of processing identity.
 - Audio preprocessing now binds converted files to source identity and
   conversion parameters through a SHA-256 manifest, validates 16 kHz mono
   output, and atomically replaces a distinct target for same-suffix inputs.

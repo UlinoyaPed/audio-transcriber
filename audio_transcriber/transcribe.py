@@ -246,6 +246,38 @@ def build_raw_transcript_document(
     }
 
 
+def build_raw_processing(
+    *,
+    lang: str,
+    preset: dict,
+    num_speakers: Optional[int],
+    hotwords: Optional[str],
+    audio_format: str,
+    skip_preprocess: bool,
+    mimo_backend: Optional[str] = None,
+    mimo_audio_tag: Optional[str] = None,
+    mimo_api_model: Optional[str] = None,
+    mimo_api_base_url: Optional[str] = None,
+) -> dict:
+    """Build the stable processing identity stored in raw artifacts."""
+    is_mimo = lang == "mimo"
+    is_api = is_mimo and mimo_backend == "api"
+    return {
+        "lang": lang,
+        "num_speakers": num_speakers,
+        "hotwords": hotwords,
+        "audio_format": audio_format,
+        "skip_preprocess": skip_preprocess,
+        "mimo_backend": mimo_backend if is_mimo else None,
+        "mimo_audio_tag": mimo_audio_tag if is_mimo else None,
+        "mimo_api_model": mimo_api_model if is_api else None,
+        "mimo_api_base_url": mimo_api_base_url if is_api else None,
+        "asr_model": preset["asr"],
+        "vad_model": preset.get("vad"),
+        "speaker_model": preset.get("spk"),
+    }
+
+
 def load_raw_transcript_document(
     path: Path,
     *,
@@ -1773,23 +1805,18 @@ def main():
             print("  Warning: --mimo-batch is deprecated and ignored; "
                   "MiMo segments are processed serially.")
 
-    raw_processing = {
-        "lang": args.lang,
-        "num_speakers": num_speakers,
-        "hotwords": hotwords,
-        "audio_format": args.audio_format,
-        "skip_preprocess": args.skip_preprocess,
-        "mimo_backend": args.mimo_backend if args.lang == "mimo" else None,
-        "mimo_audio_tag": args.mimo_audio_tag if args.lang == "mimo" else None,
-        "mimo_api_model": (
-            mimo_api["model"]
-            if args.lang == "mimo" and args.mimo_backend == "api"
-            else None
-        ),
-        "asr_model": preset["asr"],
-        "vad_model": preset.get("vad"),
-        "speaker_model": preset.get("spk"),
-    }
+    raw_processing = build_raw_processing(
+        lang=args.lang,
+        preset=preset,
+        num_speakers=num_speakers,
+        hotwords=hotwords,
+        audio_format=args.audio_format,
+        skip_preprocess=args.skip_preprocess,
+        mimo_backend=args.mimo_backend,
+        mimo_audio_tag=args.mimo_audio_tag,
+        mimo_api_model=mimo_api["model"],
+        mimo_api_base_url=mimo_api["base_url"],
+    )
 
     # Load reference materials
     reference_text = None

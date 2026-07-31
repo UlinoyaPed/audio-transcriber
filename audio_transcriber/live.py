@@ -34,7 +34,11 @@ from .mimo_asr import (
 from .model_revisions import modelscope_revision
 from .transcribe import (
     MODEL_PRESETS,
+    _atomic_write_json,
+    _atomic_write_text,
     assemble_markdown,
+    build_raw_processing,
+    build_raw_transcript_document,
     build_speaker_map,
     chunk_by_duration,
     format_chunk,
@@ -682,6 +686,8 @@ def finalize_live_output(
     speaker_names: Optional[list[str]],
     device: str,
     model: str,
+    base_url: str,
+    audio_tag: str,
     title: str,
     assign_speakers_fn: Optional[Callable[..., list]] = None,
 ) -> list[dict]:
@@ -706,6 +712,9 @@ def finalize_live_output(
         markdown_path=markdown_path,
         speaker_names=speaker_names,
         model=model,
+        base_url=base_url,
+        audio_tag=audio_tag,
+        num_speakers=num_speakers,
         title=title,
     )
 
@@ -718,6 +727,9 @@ def write_diarized_live_output(
     markdown_path: Path,
     speaker_names: Optional[list[str]],
     model: str,
+    base_url: str,
+    audio_tag: str,
+    num_speakers: Optional[int],
     title: str,
 ) -> list[dict]:
     """Normalize an already-diarized transcript and save both output formats."""
@@ -730,9 +742,22 @@ def write_diarized_live_output(
         }
         for segment in segments
     ]
-    raw_json_path.write_text(
-        json.dumps(diarized, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    preset = MODEL_PRESETS["mimo"]
+    processing = build_raw_processing(
+        lang="mimo",
+        preset=preset,
+        num_speakers=num_speakers,
+        hotwords=None,
+        audio_format="flac",
+        skip_preprocess=False,
+        mimo_backend="api",
+        mimo_audio_tag=audio_tag,
+        mimo_api_model=model,
+        mimo_api_base_url=base_url,
+    )
+    _atomic_write_json(
+        raw_json_path,
+        build_raw_transcript_document(recording_path, diarized, processing),
     )
 
     merged = merge_consecutive(diarized)
@@ -757,7 +782,7 @@ def write_diarized_live_output(
             "speaker_genders": {},
         },
     )
-    markdown_path.write_text(markdown, encoding="utf-8")
+    _atomic_write_text(markdown_path, markdown)
     return diarized
 
 
@@ -844,6 +869,9 @@ def recover_live_checkpoint(
         markdown_path=markdown_path,
         speaker_names=state.get("speaker_names"),
         model=state["model"],
+        base_url=state["base_url"],
+        audio_tag=state["audio_tag"],
+        num_speakers=state.get("num_speakers"),
         title=title,
     )
     state["status"] = "complete"
@@ -1240,6 +1268,8 @@ def run(argv: Optional[list[str]] = None) -> int:
             speaker_names=speaker_names,
             device=args.device,
             model=api["model"],
+            base_url=api["base_url"],
+            audio_tag=args.mimo_audio_tag,
             title=args.title,
         )
         save_live_checkpoint(

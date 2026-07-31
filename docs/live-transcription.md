@@ -160,12 +160,20 @@ To run optional LLM cleanup after live finalization, reuse its raw JSON:
 ```bash
 audio-transcriber transcripts/weekly-meeting.wav \
   --skip-transcribe \
+  --lang mimo \
+  --mimo-backend api \
+  --mimo-audio-tag '<auto>' \
+  --mimo-api-model mimo-v2.5-asr \
   --json-out transcripts/weekly-meeting_raw_transcript.json \
   --output transcripts/weekly-meeting-cleaned.md \
   --speakers '张三,李四,王五,赵六' \
   --model your-model \
   --provider openai
 ```
+
+The live raw JSON uses the same source-bound schema as offline output. If the
+recording changes, or the MiMo backend, model, endpoint, language tag, or
+speaker count differs, `--skip-transcribe` refuses to mix the artifacts.
 
 ## Dependencies
 

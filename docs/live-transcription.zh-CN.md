@@ -124,12 +124,19 @@ audio-transcriber-live \
 ```bash
 audio-transcriber transcripts/weekly-meeting.wav \
   --skip-transcribe \
+  --lang mimo \
+  --mimo-backend api \
+  --mimo-audio-tag '<auto>' \
+  --mimo-api-model mimo-v2.5-asr \
   --json-out transcripts/weekly-meeting_raw_transcript.json \
   --output transcripts/weekly-meeting-cleaned.md \
   --speakers '张三,李四,王五,赵六' \
   --model your-model \
   --provider openai
 ```
+
+实时 raw JSON 与离线输出使用相同的来源绑定 schema。如果录音发生变化，或 MiMo
+后端、模型、端点、语言标签、说话人数不一致，`--skip-transcribe` 会拒绝混用这些产物。
 
 ## 依赖
 

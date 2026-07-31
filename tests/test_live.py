@@ -22,6 +22,7 @@ from audio_transcriber.live import (
     save_live_checkpoint,
 )
 from audio_transcriber.mimo_api import MimoApiError, MimoApiRetryableError
+from audio_transcriber.transcribe import load_raw_transcript_document
 
 
 def _pcm(seconds: float, sample_rate: int = 16_000) -> bytes:
@@ -457,12 +458,15 @@ def test_recover_checkpoint_reprocesses_master_wav_without_microphone(tmp_path):
     assert captured["audio_path"] == str(recording)
     assert captured["backend"] == "api"
     assert captured["device"] == "cpu"
-    assert json.loads(raw_json.read_text(encoding="utf-8"))[0] == {
+    raw_document = json.loads(raw_json.read_text(encoding="utf-8"))
+    assert raw_document["segments"][0] == {
         "speaker": 0,
         "start_ms": 1000,
         "end_ms": 5000,
         "text": "恢复文本",
     }
+    assert raw_document["source_audio"]["path"] == str(recording.resolve())
+    assert raw_document["processing"]["mimo_backend"] == "api"
     assert "MiMo API (mimo-v2.5-asr)" in markdown.read_text(encoding="utf-8")
     state = json.loads(checkpoint.read_text(encoding="utf-8"))
     assert state["status"] == "complete"
@@ -510,6 +514,8 @@ def test_finalize_live_output_runs_cam_and_writes_unified_outputs(tmp_path):
         speaker_names=["张三"],
         device="cpu",
         model="mimo-v2.5-asr",
+        base_url="https://api.xiaomimimo.com/v1",
+        audio_tag="<auto>",
         title="实时会议",
         assign_speakers_fn=assigner,
     )
@@ -522,7 +528,18 @@ def test_finalize_live_output_runs_cam_and_writes_unified_outputs(tmp_path):
             "text": "测试文本",
         }
     ]
-    assert json.loads(raw_json.read_text(encoding="utf-8")) == result
+    raw_document = json.loads(raw_json.read_text(encoding="utf-8"))
+    assert raw_document["segments"] == result
+    assert raw_document["source_audio"]["sha256"]
+    assert raw_document["processing"]["mimo_api_model"] == "mimo-v2.5-asr"
+    assert raw_document["processing"]["num_speakers"] == 1
+    loaded, _ = load_raw_transcript_document(
+        raw_json,
+        audio_path=recording,
+        expected_processing=raw_document["processing"],
+        require_identity=True,
+    )
+    assert loaded == result
     rendered = markdown.read_text(encoding="utf-8")
     assert "MiMo API (mimo-v2.5-asr)" in rendered
     assert "[00:00:01] 张三: 测试文本" in rendered
