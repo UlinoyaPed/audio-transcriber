@@ -156,7 +156,7 @@ FunASR 的 `SpectralCluster.get_spec_embs()` 使用 `scipy.linalg.eigh(L)` 计�
 
 - **阶段 2，自我介绍检测**：扫描前 5 分钟，识别“我是 X”“I'm X”等明确自我介绍，必要时交换标签；
 - **阶段 3，LLM 角色校验**：提供 `--speaker-context` 后，LLM 会在文本清理前分析第一个最长 15 分钟的分块。两人场景执行 CORRECT/SWAP 判断，三人以上使用 JSON 完整重映射；
-- **事后校验工具**：`audio-transcriber-verify-speakers` 可检查任意 `*_raw_transcript.json`，支持预览两人交换或多人重映射，并可用 `--fix` 写回。
+- **事后校验工具**：`audio-transcriber-verify-speakers` 可检查任意 `*_raw_transcript.json`，支持预览两人交换或多人重映射。多人映射必须是当前姓名集合上的完整双射；`--fix` 会保留带编号的 `.bak`，并通过校验、fsync 和原子替换写回。
 
 播客场景建议始终提供描述主持人和嘉宾角色的 `--speaker-context`。
 

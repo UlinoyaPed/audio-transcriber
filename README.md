@@ -255,6 +255,11 @@ audio-transcriber-verify-speakers meeting_raw_transcript.json \
   --fix
 ```
 
+For three or more speakers, an LLM mapping is accepted only when it is a
+complete permutation of every current name. `--fix` creates a non-overwriting
+`.bak` copy, fsyncs and parses the temporary JSON, then atomically replaces
+the requested output.
+
 ## Pipeline
 
 ```text

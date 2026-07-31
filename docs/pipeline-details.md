@@ -182,7 +182,9 @@ verification, plus a standalone post-hoc tool:
    JSON-based reassignment matching each label to the correct person.
 3. **Post-hoc — `verify_speakers.py`**: standalone script that verifies any
    existing `*_raw_transcript.json`. Same two modes (2-speaker swap, N-speaker
-   reassignment) with dry-run support. See the README's speaker verification
+   reassignment) with dry-run support. Multi-speaker mappings must be complete
+   bijections over the current names. Fixes preserve a numbered `.bak` and use
+   verified, fsync'd atomic replacement. See the README's speaker verification
    section.
 
 For podcasts, always provide `--speaker-context` describing host/guest roles.

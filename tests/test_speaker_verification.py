@@ -300,14 +300,15 @@ class TestApplyMeetingMapping:
         assert transcript[0]["speaker"] == 1
         assert transcript[1]["speaker"] == 0
 
-    def test_partial_mapping_ignored(self):
+    def test_partial_mapping_rejected(self):
         transcript = [
             make_segment(0, 0, 1000, "a"),
             make_segment(1, 1000, 2000, "b"),
         ]
         speaker_map = {0: "Alice", 1: "Bob"}
         mapping = {"Alice": "Alice"}
-        vs.apply_meeting_mapping(transcript, speaker_map, mapping)
+        with pytest.raises(ValueError, match="keys must exactly match"):
+            vs.apply_meeting_mapping(transcript, speaker_map, mapping)
         assert transcript[0]["speaker"] == 0
         assert transcript[1]["speaker"] == 1
 
@@ -1064,6 +1065,19 @@ class TestVerifySpeakerRolesViaLLM:
         result = tf._verify_speaker_roles_via_llm("text", speaker_map, ctx, "model", "us-west-2")
         assert result == {0: "Alice", 1: "Bob", 2: "Carol"}
 
+    @patch("audio_transcriber.transcribe.call_llm")
+    def test_multi_speaker_partial_mapping_rejected(self, mock_llm):
+        mock_llm.return_value = json.dumps({
+            "correct": False,
+            "mapping": {"Alice": "Bob"},
+        })
+        speaker_map = {0: "Alice", 1: "Bob", 2: "Carol"}
+        ctx = {"Alice": "leader", "Bob": "eng", "Carol": "design"}
+        result = tf._verify_speaker_roles_via_llm(
+            "text", speaker_map, ctx, "model", "us-west-2"
+        )
+        assert result == {0: "Alice", 1: "Bob", 2: "Carol"}
+
 
 # ──────────────────────────────────────────────
 # Integration: main() with mock LLM
@@ -1104,6 +1118,10 @@ class TestVerifySpeakersMain:
         with open(json_path, encoding="utf-8") as f:
             data = json.load(f)
         assert data[0]["speaker"] == 1  # swapped
+        backup = json.loads(
+            (json_path.with_suffix(".json.bak")).read_text(encoding="utf-8")
+        )
+        assert backup[0]["speaker"] == 0
 
     @patch("audio_transcriber.verify_speakers.call_llm")
     def test_podcast_correct_no_changes(self, mock_llm, two_speaker_transcript,

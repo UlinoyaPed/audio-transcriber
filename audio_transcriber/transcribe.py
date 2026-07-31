@@ -71,6 +71,7 @@ from .speaker_gender import (
     merge_gender_sources,
     parse_gender_cli_arg,
 )
+from .speaker_mapping import speaker_permutation_error
 
 
 # ──────────────────────────────────────────────
@@ -1179,20 +1180,15 @@ def _verify_multi_speakers(first_chunk_text: str, speaker_map: dict,
         return speaker_map
 
     mapping = parsed.get("mapping", {})
+    known_names = list(speaker_map.values())
+    mapping_error = speaker_permutation_error(mapping, known_names)
+    if mapping_error:
+        print(f"  LLM speaker verification: unsafe mapping ({mapping_error}), "
+              "skipping")
+        return speaker_map
     has_changes = any(k != v for k, v in mapping.items())
     if not has_changes:
         print("  LLM speaker verification: labels CONFIRMED correct")
-        return speaker_map
-
-    # Validate: all names in mapping must be known speakers
-    known_names = set(speaker_map.values())
-    targets = [v for k, v in mapping.items() if k != v]
-    if len(targets) != len(set(targets)):
-        print("  LLM speaker verification: duplicate targets in mapping, skipping")
-        return speaker_map
-    unknown = [n for n in targets if n not in known_names]
-    if unknown:
-        print(f"  LLM speaker verification: unknown speakers {unknown}, skipping")
         return speaker_map
 
     # Build the full permutation atomically (handles 3+ way cycles)

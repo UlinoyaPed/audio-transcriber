@@ -36,12 +36,16 @@ Usage:
 
 import argparse
 import json
+import os
 import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 from .llm_utils import call_llm, detect_llm_provider
+from .speaker_mapping import speaker_permutation_error
 
 
 # ──────────────────────────────────────────────
@@ -216,6 +220,10 @@ def apply_meeting_mapping(transcript: list, speaker_map: dict,
 
     mapping: {"current_label": "correct_name", ...}
     """
+    error = speaker_permutation_error(mapping, list(speaker_map.values()))
+    if error:
+        raise ValueError(f"Unsafe speaker mapping: {error}")
+
     # Build reverse map: name -> speaker_id
     name_to_id = {v: k for k, v in speaker_map.items()}
 
@@ -250,6 +258,58 @@ def apply_meeting_mapping(transcript: list, speaker_map: dict,
             speaker_map[sid] = correct_name
 
     return transcript
+
+
+def _fsync_parent(path: Path) -> None:
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _next_backup_path(path: Path) -> Path:
+    candidate = path.with_suffix(path.suffix + ".bak")
+    index = 1
+    while candidate.exists():
+        candidate = path.with_suffix(path.suffix + f".bak.{index}")
+        index += 1
+    return candidate
+
+
+def safely_write_transcript(path: Path, transcript: list) -> Optional[Path]:
+    """Back up an existing JSON and atomically replace it with verified data."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup_path = None
+    if path.exists():
+        backup_path = _next_backup_path(path)
+        shutil.copy2(path, backup_path)
+        with backup_path.open("rb") as backup:
+            os.fsync(backup.fileno())
+        _fsync_parent(backup_path)
+
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(transcript, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        parsed = json.loads(temp_path.read_text(encoding="utf-8"))
+        if parsed != transcript:
+            raise RuntimeError("Corrected transcript verification failed")
+        os.replace(temp_path, path)
+        _fsync_parent(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+    return backup_path
 
 
 # ──────────────────────────────────────────────
@@ -386,6 +446,14 @@ def main():
             for name, reason in evidence.items():
                 print(f"  {name}: {reason}")
 
+        mapping_error = speaker_permutation_error(
+            mapping, list(speaker_map.values())
+        )
+        if mapping_error:
+            print(f"\nERROR: Unsafe LLM speaker mapping: {mapping_error}")
+            print("Skipping reassignment to avoid data corruption.")
+            sys.exit(2)
+
         # Check if mapping differs from current
         has_changes = any(k != v for k, v in mapping.items())
         if mapping:
@@ -393,21 +461,6 @@ def main():
             for current, correct_name in mapping.items():
                 marker = " ← CHANGE" if current != correct_name else ""
                 print(f"  {current} → {correct_name}{marker}")
-
-        # Validate mapping before applying
-        known_names = set(speaker_map.values())
-        if has_changes:
-            targets = [v for k, v in mapping.items() if k != v]
-            if len(targets) != len(set(targets)):
-                dupes = {t for t in targets if targets.count(t) > 1}
-                print(f"\nERROR: LLM mapping has duplicate targets: {dupes}")
-                print("Skipping reassignment to avoid data corruption.")
-                sys.exit(2)
-            unknown = [n for n in targets if n not in known_names]
-            if unknown:
-                print(f"\nERROR: Mapping references unknown speakers: {unknown}")
-                print("Skipping reassignment.")
-                sys.exit(2)
 
         needs_fix = has_changes
         if needs_fix and args.fix:
@@ -419,9 +472,10 @@ def main():
     # Write output
     if needs_fix and args.fix:
         out_path = Path(args.output) if args.output else json_path
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(transcript, f, ensure_ascii=False, indent=2)
+        backup_path = safely_write_transcript(out_path, transcript)
         print(f"\nCorrected transcript saved: {out_path}")
+        if backup_path:
+            print(f"Original backup: {backup_path}")
         print(f"Re-run the main pipeline with --skip-transcribe to regenerate markdown")
     elif not needs_fix:
         print("\nNo corrections needed — speaker labels appear correct.")

@@ -208,6 +208,10 @@ audio-transcriber-verify-speakers meeting_raw_transcript.json \
   --fix
 ```
 
+三人及以上场景只接受覆盖全部当前姓名的完整排列。`--fix` 会先生成不覆盖
+已有备份的 `.bak` 文件，再对临时 JSON 执行 fsync 和解析回读，最后原子替换
+目标文件。
+
 ## 处理管线
 
 ```text

@@ -35,6 +35,9 @@
 - LLM chunk caches are now atomic JSON records bound to a complete semantic
   input fingerprint; model, provider, prompt, transcript, speaker, reference,
   or gender changes invalidate stale results automatically.
+- Multi-speaker LLM mappings must now be complete name permutations. The
+  standalone verifier backs up existing JSON and uses fsync'd, parse-verified
+  atomic replacement instead of destructive direct writes.
 - Expanded the package and repository introduction to cover live recording,
   speaker diarization, and MiMo local/API backends.
 - Runtime modules now live in `audio_transcriber/`; setup scripts live in
