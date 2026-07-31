@@ -800,7 +800,9 @@ class TestResolveHfSnapshot:
         from huggingface_hub.errors import LocalEntryNotFoundError
         calls = []
 
-        def fake_snapshot_download(repo_id, cache_dir, local_files_only):
+        def fake_snapshot_download(repo_id, revision, cache_dir,
+                                   local_files_only):
+            assert revision == "98641d537df521ac6df05f74090475694d9510b7"
             calls.append(cache_dir)
             if cache_dir.endswith("/hub"):
                 return f"{cache_dir}/models--{repo_id.replace('/', '--')}/snapshots/abc"
@@ -821,7 +823,9 @@ class TestResolveHfSnapshot:
         """Download was done via cache_dir= directly → no hub/ subdir."""
         from huggingface_hub.errors import LocalEntryNotFoundError
 
-        def fake_snapshot_download(repo_id, cache_dir, local_files_only):
+        def fake_snapshot_download(repo_id, revision, cache_dir,
+                                   local_files_only):
+            assert revision == "98641d537df521ac6df05f74090475694d9510b7"
             if not cache_dir.endswith("/hub"):
                 return f"{cache_dir}/models--{repo_id.replace('/', '--')}/snapshots/xyz"
             raise LocalEntryNotFoundError("not under hub/")

@@ -262,6 +262,13 @@ FunASR 接受常见音频格式。FLAC 在质量、大小和原生读取能力�
 
 FunASR 中文预设约 3 GB，首次运行时从 ModelScope 下载并缓存到 `~/.cache/modelscope/hub/`。EC2 和临时云主机被替换后会丢失缓存，需要再次下载约两分钟。
 
+项目内置的 ModelScope 模型 ID 都会解析到
+`audio_transcriber/model_revisions.py` 声明的不可变提交；MiMo 的 Hugging Face
+快照也在同一处固定。`scripts/setup_env.sh` 安装
+`constraints/runtime-py312.txt` 中的精确直接依赖，并按所选 CPU/CUDA 索引固定
+PyTorch/torchaudio 组合。经过验证的 FlashAttention 二进制只有在 SHA-256 校验
+通过后才会安装；其他平台组合从固定版本源码构建。
+
 将缓存放到持久存储：
 
 ```bash

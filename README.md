@@ -39,6 +39,12 @@ bash scripts/setup_env.sh
 source .venv/bin/activate
 ```
 
+For reproducible installs, the script uses
+[`constraints/runtime-py312.txt`](constraints/runtime-py312.txt), pins the
+PyTorch/torchaudio pair for each supported wheel index, and loads bundled
+ModelScope and Hugging Face models at immutable commits. Model upgrades are
+explicit code changes rather than silent changes on a later install.
+
 MiMo API mode needs no MiMo weights. Local MiMo is an explicit opt-in because
 it downloads approximately 34 GB and requires a CUDA GPU with at least 20 GB
 VRAM:
@@ -47,6 +53,12 @@ VRAM:
 INSTALL_MIMO=1 MIMO_WEIGHTS_PATH=/path/to/hf-cache \
   bash scripts/setup_env.sh
 ```
+
+Local MiMo also pins the upstream source checkout and model snapshots. The
+installer only uses the pre-built FlashAttention wheel validated by the
+project's end-to-end run after checking its committed SHA-256. Other platform
+combinations build the pinned FlashAttention source release and require
+`nvcc`; no unverified release binary is executed.
 
 For development and mocked tests only:
 

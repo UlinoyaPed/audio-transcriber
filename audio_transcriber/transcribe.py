@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Optional
 
 from .llm_utils import call_llm, detect_llm_provider
+from .model_revisions import modelscope_revision
 from .speaker_gender import (
     classify_speaker_gender,
     extract_gender_from_reference,
@@ -500,14 +501,19 @@ def transcribe_with_funasr(audio_path: str, lang: str = "zh",
 
     model_kwargs = {
         "model": preset["asr"],
+        "model_revision": modelscope_revision(preset["asr"]),
         "vad_model": preset["vad"],
+        "vad_model_revision": modelscope_revision(preset["vad"]),
         "vad_kwargs": {"max_single_segment_time": 60000},
         "spk_model": preset["spk"],
+        "spk_model_revision": modelscope_revision(preset["spk"]),
         "device": device,
         "disable_update": True,
     }
     if preset.get("punc"):
         model_kwargs["punc_model"] = preset["punc"]
+        model_kwargs["punc_model_revision"] = modelscope_revision(
+            preset["punc"])
 
     # SeACo-Paraformer: pass hotwords at model init
     if hotwords and preset.get("hotword_support"):
@@ -824,7 +830,15 @@ def rescore_montage_speakers(transcript: list, montage_end: int,
 
     print(f"  Montage re-scoring: extracting speaker embeddings...")
 
-    spk_model = AutoModel(model=spk_model_id, device=device, disable_update=True)
+    spk_kwargs = {
+        "model": spk_model_id,
+        "device": device,
+        "disable_update": True,
+    }
+    spk_revision = modelscope_revision(spk_model_id)
+    if spk_revision:
+        spk_kwargs["model_revision"] = spk_revision
+    spk_model = AutoModel(**spk_kwargs)
 
     audio_data, sample_rate = sf.read(audio_path, dtype="float32")
     if len(audio_data.shape) > 1:

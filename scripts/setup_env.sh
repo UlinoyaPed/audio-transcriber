@@ -25,6 +25,7 @@ INSTALL_MIMO="${INSTALL_MIMO:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONSTRAINTS_FILE="$PROJECT_ROOT/constraints/runtime-py312.txt"
 
 echo "=== Audio Transcriber Environment Setup ==="
 echo ""
@@ -108,7 +109,7 @@ if [ "$FORCE_VARIANT" = "auto" ]; then
         CUDA_VER=$(nvidia-smi | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' || echo "")
         MAJOR=$(echo "$CUDA_VER" | cut -d. -f1)
         if [ "$MAJOR" -ge 12 ] 2>/dev/null; then
-            FORCE_VARIANT="cu121"
+            FORCE_VARIANT="cu124"
         elif [ "$MAJOR" -ge 11 ] 2>/dev/null; then
             FORCE_VARIANT="cu118"
         else
@@ -122,18 +123,36 @@ if [ "$FORCE_VARIANT" = "auto" ]; then
 fi
 
 # Install PyTorch
+case "$FORCE_VARIANT" in
+    cpu|cu118|cu124)
+        PYTORCH_VERSION="2.6.0"
+        ;;
+    cu121)
+        PYTORCH_VERSION="2.5.1"
+        ;;
+    *)
+        echo "ERROR: unsupported PyTorch variant: $FORCE_VARIANT"
+        echo "  Supported values: cpu, cu118, cu121, cu124"
+        exit 1
+        ;;
+esac
+TORCHAUDIO_VERSION="$PYTORCH_VERSION"
 echo "Installing PyTorch ($FORCE_VARIANT)..."
 if [ "$FORCE_VARIANT" = "cpu" ]; then
-    pip install -q torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    pip install -q "torch==$PYTORCH_VERSION" "torchaudio==$TORCHAUDIO_VERSION" \
+        --index-url https://download.pytorch.org/whl/cpu
 else
-    pip install -q torch torchaudio --index-url "https://download.pytorch.org/whl/$FORCE_VARIANT"
+    pip install -q "torch==$PYTORCH_VERSION" "torchaudio==$TORCHAUDIO_VERSION" \
+        --index-url "https://download.pytorch.org/whl/$FORCE_VARIANT"
 fi
 
 # Install FunASR + shared deps. These are sufficient for MiMo API mode on CPU:
 # FSMN VAD + CAM++ run locally while httpx sends each WAV segment to MiMo.
 # sounddevice is the live recorder binding; the host still needs PortAudio.
 echo "Installing FunASR and dependencies..."
-pip install -q -U funasr modelscope boto3 scikit-learn soundfile sounddevice httpx
+pip install -q -c "$CONSTRAINTS_FILE" \
+    funasr modelscope boto3 scikit-learn soundfile sounddevice httpx \
+    huggingface-hub
 pip install -q -e "$PROJECT_ROOT" --no-deps
 
 # Patch clustering for long audio

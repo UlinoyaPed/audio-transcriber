@@ -31,12 +31,21 @@ bash scripts/setup_env.sh
 source .venv/bin/activate
 ```
 
+为保证安装结果可复现，脚本使用
+[`constraints/runtime-py312.txt`](constraints/runtime-py312.txt)，针对各个受支持的
+wheel 索引固定 PyTorch/torchaudio 版本，并以不可变提交加载项目内置的
+ModelScope 与 Hugging Face 模型。因此模型升级必须经过明确的代码变更，不会在日后安装时静默漂移。
+
 MiMo API 模式不需要下载 MiMo 权重。本地 MiMo 需要下载约 34 GB 数据，并要求至少具有 20 GB 显存的 CUDA GPU，因此必须显式启用：
 
 ```bash
 INSTALL_MIMO=1 MIMO_WEIGHTS_PATH=/path/to/hf-cache \
   bash scripts/setup_env.sh
 ```
+
+本地 MiMo 还固定了上游源码提交与模型快照。安装器只会使用经过项目端到端验证且
+通过已提交 SHA-256 校验的预编译 FlashAttention wheel。其他平台组合会从固定版本
+源码构建并要求 `nvcc`，不会执行未经校验的发布二进制。
 
 如果只进行开发和模拟测试：
 

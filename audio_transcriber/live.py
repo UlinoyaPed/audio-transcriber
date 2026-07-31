@@ -31,6 +31,7 @@ from .mimo_asr import (
     assign_speakers_via_cam,
     recognize_with_retry,
 )
+from .model_revisions import modelscope_revision
 from .transcribe import (
     MODEL_PRESETS,
     assemble_markdown,
@@ -1098,6 +1099,7 @@ def run(argv: Optional[list[str]] = None) -> int:
 
         vad_model = AutoModel(
             model=MODEL_PRESETS["mimo"]["vad"],
+            model_revision=modelscope_revision(MODEL_PRESETS["mimo"]["vad"]),
             vad_kwargs={"max_single_segment_time": 30_000},
             device=args.device,
             disable_update=True,

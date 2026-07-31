@@ -303,6 +303,14 @@ FunASR models (~3 GB for the `zh` preset) are downloaded from ModelScope on firs
 and cached in `~/.cache/modelscope/hub/`. On ephemeral instances (EC2, cloud VMs), the
 cache is lost when the instance is replaced, requiring a ~2 minute re-download.
 
+Bundled ModelScope IDs resolve at immutable commit revisions declared in
+`audio_transcriber/model_revisions.py`; MiMo's Hugging Face snapshots are
+pinned there as well. `scripts/setup_env.sh` installs the exact direct
+dependency versions in `constraints/runtime-py312.txt` and a fixed
+PyTorch/torchaudio pair for the selected CPU/CUDA index. The verified
+FlashAttention binary is accepted only after SHA-256 validation; unsupported
+platform combinations build the pinned source release.
+
 To persist the cache on durable storage (e.g., an EBS data volume):
 
 ```bash

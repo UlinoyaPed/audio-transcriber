@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from .model_revisions import hf_revision, modelscope_revision
+
 from .asr_engine import ASREngine, MimoApiEngine, MimoLocalEngine
 from .mimo_api import (
     DEFAULT_MAX_AUDIO_BYTES,
@@ -107,7 +109,8 @@ def _resolve_hf_snapshot(repo_id: str, weights_path: str) -> str:
     last_exc: Optional[BaseException] = None
     for candidate in (hub_path, weights_path):
         try:
-            return snapshot_download(repo_id, cache_dir=candidate,
+            return snapshot_download(repo_id, revision=hf_revision(repo_id),
+                                     cache_dir=candidate,
                                      local_files_only=True)
         except LocalEntryNotFoundError as e:
             last_exc = e
@@ -559,7 +562,15 @@ def assign_speakers_via_cam(segments: list, audio_path: str,
     from funasr import AutoModel
     from sklearn.cluster import KMeans
 
-    spk_model = AutoModel(model=spk_model_id, device=device, disable_update=True)
+    spk_kwargs = {
+        "model": spk_model_id,
+        "device": device,
+        "disable_update": True,
+    }
+    spk_revision = modelscope_revision(spk_model_id)
+    if spk_revision:
+        spk_kwargs["model_revision"] = spk_revision
+    spk_model = AutoModel(**spk_kwargs)
     audio_data, sample_rate = sf.read(audio_path, dtype="float32")
     if len(audio_data.shape) > 1:
         audio_data = audio_data[:, 0]
@@ -597,12 +608,16 @@ def run_fsmn_vad(audio_path: str,
                  max_single_segment_time: int = 60000) -> list:
     """Run FSMN VAD and return a list of (start_ms, end_ms) intervals."""
     from funasr import AutoModel
-    model = AutoModel(
-        model=model_id,
-        vad_kwargs={"max_single_segment_time": max_single_segment_time},
-        device=device,
-        disable_update=True,
-    )
+    model_kwargs = {
+        "model": model_id,
+        "vad_kwargs": {"max_single_segment_time": max_single_segment_time},
+        "device": device,
+        "disable_update": True,
+    }
+    model_revision = modelscope_revision(model_id)
+    if model_revision:
+        model_kwargs["model_revision"] = model_revision
+    model = AutoModel(**model_kwargs)
     res = model.generate(input=audio_path)
     if not res or "value" not in res[0]:
         return []
